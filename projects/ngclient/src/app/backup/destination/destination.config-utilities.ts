@@ -188,6 +188,58 @@ export function concatPaths(...paths: (string | null | undefined)[]) {
   return result;
 }
 
+export function combineDestinationPath(
+  basePath: string | null | undefined,
+  destination: string | null | undefined
+): string {
+  if (!destination) return basePath ?? '';
+  if (!basePath) {
+    return destination.replace(/^\/+/, '');
+  }
+
+  const hasLeadingSlash = basePath.startsWith('/');
+  const baseClean = basePath.replace(/^\/+/, '').replace(/\/+$/, '');
+  const destClean = destination.replace(/^\/+/, '');
+  const hasTrailingSlash = destination.endsWith('/') || basePath.endsWith('/');
+
+  if (!baseClean) {
+    const res = destClean.replace(/^\/+/, '');
+    return hasLeadingSlash ? '/' + res : res;
+  }
+
+  const baseParts = baseClean.split('/').filter(Boolean);
+  const destParts = destClean.split('/').filter(Boolean);
+
+  if (destParts.length === 0) {
+    return hasLeadingSlash ? '/' + baseClean + '/' : baseClean + '/';
+  }
+
+  // Find the longest suffix of baseParts that matches a prefix of destParts
+  let maxOverlap = 0;
+  const maxPossibleOverlap = Math.min(baseParts.length, destParts.length);
+  for (let k = maxPossibleOverlap; k >= 1; k--) {
+    let match = true;
+    for (let i = 0; i < k; i++) {
+      if (baseParts[baseParts.length - k + i] !== destParts[i]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      maxOverlap = k;
+      break;
+    }
+  }
+
+  const combinedParts = [...baseParts, ...destParts.slice(maxOverlap)];
+  let combined = combinedParts.join('/');
+  if (hasTrailingSlash && !combined.endsWith('/')) {
+    combined += '/';
+  }
+
+  return hasLeadingSlash ? '/' + combined : combined;
+}
+
 export function encodePathPreservingSlashes(path: string) {
   return path.split('/').map(encodeURIComponent).join('/');
 }

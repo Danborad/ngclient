@@ -5,6 +5,7 @@ import {
   addServer,
   buildUrl,
   buildUrlFromFields,
+  combineDestinationPath,
   concatPaths,
   encodePathPreservingSlashes,
   getSimplePath,
@@ -123,6 +124,37 @@ describe('destination URL utilities', () => {
       expect(encodePathPreservingSlashes('folder name/file#1/日本語')).toBe(
         'folder%20name/file%231/%E6%97%A5%E6%9C%AC%E8%AA%9E'
       );
+    });
+  });
+
+  describe('combineDestinationPath', () => {
+    it.each([
+      ['', '百度网盘/', '百度网盘/'],
+      [null, '/百度网盘/', '百度网盘/'],
+      [undefined, '百度网盘/', '百度网盘/'],
+      ['/', '百度网盘/', '/百度网盘/'],
+      ['/', '/百度网盘/', '/百度网盘/'],
+      ['dav', '/百度网盘/', 'dav/百度网盘/'],
+      ['dav', '百度网盘/', 'dav/百度网盘/'],
+      ['dav', '/百度网盘/subfolder/', 'dav/百度网盘/subfolder/'],
+      ['dav', '百度网盘/subfolder/file/', 'dav/百度网盘/subfolder/file/'],
+      ['/dav', '/百度网盘/', '/dav/百度网盘/'],
+      ['dav/', '百度网盘/', 'dav/百度网盘/'],
+      ['/dav/', '百度网盘/', '/dav/百度网盘/'],
+      ['/dav/', '/百度网盘/', '/dav/百度网盘/'],
+      ['dav', '百度网盘', 'dav/百度网盘'],
+      ['/dav', '百度网盘', '/dav/百度网盘'],
+      ['dav/百度网盘/', '/sub/', 'dav/百度网盘/sub/'],
+      ['dav/百度网盘/', '/百度网盘/', 'dav/百度网盘/'],
+      ['dav/百度网盘/', '/dav/百度网盘/', 'dav/百度网盘/'],
+      ['dav/百度网盘/', '百度网盘/sub/', 'dav/百度网盘/sub/'],
+      ['dav/百度网盘/', 'dav/百度网盘/sub/', 'dav/百度网盘/sub/'],
+      ['/dav/百度网盘/', 'dav/百度网盘/sub/', '/dav/百度网盘/sub/'],
+      ['Desktop', "/lodoro's duck/", "Desktop/lodoro's duck/"],
+      ['backup', '/sub/', 'backup/sub/'],
+      ['/var/backup', '/job1/', '/var/backup/job1/'],
+    ] as const)('combines basePath %s and destination %s to %s', (basePath, destination, expected) => {
+      expect(combineDestinationPath(basePath, destination)).toBe(expected);
     });
   });
 

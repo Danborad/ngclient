@@ -38,6 +38,7 @@ import { RemoteControlState } from '../../../settings/remote-control/remote-cont
 import { ServerSettingsService } from '../../../settings/server-settings.service';
 import { BackupState } from '../../backup.state';
 import {
+  combineDestinationPath,
   concatPaths,
   CustomFormView,
   FormView,
@@ -522,15 +523,13 @@ export class SingleDestinationComponent {
     });
 
     // The tree lists folders relative to the current target URL, so the picked
-    // path must be appended to the path that was already configured.
+    // path must be combined with the path that was already configured, preserving any interface prefix.
     const basePath = (this.destinationForm()[fieldGroup][fieldName] ?? '') as string;
 
     dialogRef.closed.subscribe((destination) => {
       if (!destination) return;
 
-      destination = destination.replace(/^\/+/, '');
-
-      const fullPath = concatPaths(basePath, destination);
+      const fullPath = combineDestinationPath(basePath, destination);
 
       this.destinationForm.update((y) => {
         y[fieldGroup][fieldName] = fullPath;

@@ -55,6 +55,26 @@ describe('SingleDestinationComponent browse', () => {
     expect(fixture.componentInstance.targetUrl()).toContain("smb://192.168.1.62/backuperika/Desktop/lodoro's%20duck/");
   });
 
+  it('preserves webdav prefix like dav when browsing and picking a subfolder', () => {
+    const fixture = create('webdav://192.168.31.46:5244/dav?auth-username=u&auth-password=p');
+
+    fixture.componentInstance.browse('custom', 'path', null);
+    dialogClosed.next('/百度网盘/');
+    fixture.detectChanges();
+
+    expect(fixture.componentInstance.targetUrl()).toContain('webdav://192.168.31.46:5244/dav/%E7%99%BE%E5%BA%A6%E7%BD%91%E7%9B%98/');
+  });
+
+  it('does not duplicate existing path prefix when reopening and selecting deeper path', () => {
+    const fixture = create('webdav://192.168.31.46:5244/dav/%E7%99%BE%E5%BA%A6%E7%BD%91%E7%9B%98/?auth-username=u&auth-password=p');
+
+    fixture.componentInstance.browse('custom', 'path', null);
+    dialogClosed.next('dav/百度网盘/sub/');
+    fixture.detectChanges();
+
+    expect(fixture.componentInstance.targetUrl()).toContain('webdav://192.168.31.46:5244/dav/%E7%99%BE%E5%BA%A6%E7%BD%91%E7%9B%98/sub/');
+  });
+
   it('uses the picked folder directly when no path is configured yet', () => {
     const fixture = create('smb://192.168.1.62/backuperika?auth-username=u&auth-password=p');
 
