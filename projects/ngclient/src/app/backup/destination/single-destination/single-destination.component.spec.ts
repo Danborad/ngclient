@@ -119,4 +119,17 @@ describe('SingleDestinationComponent browse', () => {
       })
     );
   });
+
+  it('passes explicit connectionStringId to browse dialog in saved destinations', () => {
+    const fixture = create('webdav://192.168.31.46:5244/dav', { connectionStringId: 99 });
+
+    fixture.componentInstance.browse('custom', 'path', null);
+
+    expect(dialogOpen).toHaveBeenCalledWith(
+      BrowsePathDialog,
+      expect.objectContaining({
+        data: expect.objectContaining({ connectionStringId: 99 }),
+      })
+    );
+  });
 });

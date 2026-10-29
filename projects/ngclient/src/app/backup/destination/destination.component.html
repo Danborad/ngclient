@@ -76,6 +76,7 @@
             <app-single-destination
               [targetUrl]="dest.url"
               (targetUrlChange)="updateTargetUrl($index, $event)"
+              [connectionStringId]="dest.connectionStringId"
               [useBackupState]="true" />
           </sh-toggle-card>
         }

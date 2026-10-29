@@ -129,7 +129,7 @@
             <button shButton i18n (click)="removeDestination()" type="button" class="ghost">Change</button>
           </app-destination-list-item>
 
-          <app-single-destination [(targetUrl)]="editBaseUrl" />
+          <app-single-destination [(targetUrl)]="editBaseUrl" [connectionStringId]="selectedDestinationId()" />
         } @else {
           <app-destination-list (setDestination)="setDestination($event)"></app-destination-list>
         }

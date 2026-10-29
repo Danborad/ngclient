@@ -504,7 +504,7 @@ export class SingleDestinationComponent {
   }
 
   #resolveConnectionStringId() {
-    return this.useBackupState() ? this.#backupState.connectionStringId() : this.connectionStringId();
+    return this.connectionStringId() ?? (this.useBackupState() ? this.#backupState.connectionStringId() : null);
   }
 
   browse(fieldGroup: 'custom' | 'dynamic' | 'advanced', fieldName: string, newValue: any) {
