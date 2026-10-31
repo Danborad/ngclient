@@ -1,0 +1,197 @@
+<section>
+  <div class="left">
+    <h3 i18n>任务通知设置</h3>
+    <p i18n>
+      配置备份或同步任务完成后的消息通知。支持飞书机器人、企业微信机器人、钉钉、Telegram、Bark、Server酱等渠道，类似青龙面板通知。
+    </p>
+  </div>
+
+  <div class="right notification-form">
+    @if (isLoading()) {
+      <sh-spinner class="primary" />
+    } @else {
+      <div class="field-item">
+        <label i18n>通知方式</label>
+        <sh-select
+          [options]="serviceOptions()"
+          [isClearable]="false"
+          label="label"
+          value="value">
+          <input
+            type="text"
+            [ngModel]="service()"
+            (ngModelChange)="updateService($event)"
+            [ngModelOptions]="{ standalone: true }" />
+          <ng-template let-option>
+            {{ option.label }}
+          </ng-template>
+        </sh-select>
+      </div>
+
+      @if (service() !== 'none') {
+        <div class="field-item">
+          @if (service() === 'wecom') {
+            <label i18n>企业微信 Webhook 地址或 Key</label>
+            <input
+              type="text"
+              [(ngModel)]="url"
+              placeholder="可填完整 Webhook URL 或单独的 Key (如: https://qyapi.weixin.qq.com/...)" />
+          } @else if (service() === 'feishu') {
+            <label i18n>飞书机器人 Webhook 地址</label>
+            <input
+              type="text"
+              [(ngModel)]="url"
+              placeholder="可填完整 Webhook URL 或单独的 Key (如: https://open.feishu.cn/...)" />
+          } @else if (service() === 'dingtalk') {
+            <label i18n>钉钉机器人 Webhook 地址 / Token</label>
+            <input
+              type="text"
+              [(ngModel)]="url"
+              placeholder="可填完整 Webhook URL 或 Access Token" />
+          } @else if (service() === 'telegram') {
+            <label i18n>Telegram Chat ID</label>
+            <input
+              type="text"
+              [(ngModel)]="url"
+              placeholder="输入接收消息的 Chat ID (数字)" />
+          } @else if (service() === 'bark') {
+            <label i18n>Bark 设备 Key 或服务地址</label>
+            <input
+              type="text"
+              [(ngModel)]="url"
+              placeholder="输入 Bark 设备 Key 或 https://api.day.app/您的Key" />
+          } @else if (service() === 'serverchan') {
+            <label i18n>Server酱 SendKey</label>
+            <input
+              type="text"
+              [(ngModel)]="url"
+              placeholder="输入 Server酱 Turbo SendKey" />
+          } @else if (service() === 'pushdeer') {
+            <label i18n>PushDeer PushKey</label>
+            <input
+              type="text"
+              [(ngModel)]="url"
+              placeholder="输入 PushDeer PushKey" />
+          } @else {
+            <label i18n>Webhook 地址 (URL)</label>
+            <input
+              type="text"
+              [(ngModel)]="url"
+              placeholder="输入接收 POST 请求的完整 HTTP(S) 地址" />
+          }
+        </div>
+
+        @if (service() === 'feishu' || service() === 'dingtalk') {
+          <div class="field-item">
+            <label i18n>安全密钥 / Secret (可选)</label>
+            <input
+              type="password"
+              autocomplete="new-password"
+              [(ngModel)]="secret"
+              placeholder="机器人安全设置中若启用了签名校验或加签，请填入密钥；未启用请留空" />
+          </div>
+        }
+
+        @if (service() === 'telegram') {
+          <div class="field-item">
+            <label i18n>Telegram Bot Token</label>
+            <input
+              type="password"
+              autocomplete="new-password"
+              [(ngModel)]="secret"
+              placeholder="形如 123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ" />
+          </div>
+        }
+
+        <div class="field-item">
+          <label i18n>通知触发时机</label>
+          <sh-select
+            [options]="levelOptions()"
+            [isClearable]="false"
+            label="label"
+            value="value">
+            <input
+              type="text"
+              [ngModel]="level()"
+              (ngModelChange)="updateLevel($event)"
+              [ngModelOptions]="{ standalone: true }" />
+            <ng-template let-option>
+              {{ option.label }}
+            </ng-template>
+          </sh-select>
+        </div>
+
+        <div class="field-item">
+          <label i18n>自定义标题前缀 (可选)</label>
+          <input
+            type="text"
+            [(ngModel)]="customTitle"
+            placeholder="默认: Duplicati 任务报告" />
+        </div>
+
+        @if (testResult()) {
+          <sh-alert [color]="testResult()!.success ? 'primary' : 'error'">
+            {{ testResult()!.message }}
+          </sh-alert>
+        }
+
+        @if (saveSuccess()) {
+          <sh-alert color="primary" i18n>
+            通知配置保存成功！后续任务完成将按此设置发送通知。
+          </sh-alert>
+        }
+
+        <div class="actions">
+          <button
+            shButton
+            type="button"
+            class="outlined"
+            [disabled]="isTesting() || isSaving()"
+            (click)="testNotification()"
+            i18n>
+            @if (isTesting()) {
+              <sh-spinner prefix class="primary" />
+              正在测试...
+            } @else {
+              <sh-icon prefix>paper-plane-tilt</sh-icon>
+              测试发送
+            }
+          </button>
+
+          <button
+            shButton
+            type="button"
+            class="raised primary"
+            [disabled]="isSaving() || isTesting()"
+            (click)="saveConfig()"
+            i18n>
+            @if (isSaving()) {
+              <sh-spinner prefix />
+              保存中...
+            } @else {
+              <sh-icon prefix>floppy-disk</sh-icon>
+              保存配置
+            }
+          </button>
+        </div>
+      } @else {
+        <div class="actions">
+          <button
+            shButton
+            type="button"
+            class="raised primary"
+            [disabled]="isSaving()"
+            (click)="saveConfig()"
+            i18n>
+            保存配置
+          </button>
+        </div>
+        @if (saveSuccess()) {
+          <sh-alert color="primary" i18n>
+            已关闭任务通知。
+          </sh-alert>
+        }
+      }
+    }
+  </div>
+</section>

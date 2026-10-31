@@ -21,6 +21,7 @@ import { LOCALSTORAGE } from '../core/services/localstorage.token';
 import { SysinfoState } from '../core/states/sysinfo.state';
 import { LayoutState } from '../layout/layout.state';
 import AdvancedOptionsSettingsComponent from './advanced-options-settings/advanced-options-settings.component';
+import { NotificationSettingsComponent } from './notification-settings/notification-settings.component';
 import { RemoteControlComponent } from './remote-control/remote-control.component';
 import { RemoteControlState } from './remote-control/remote-control.state';
 import { ServerSettingsService } from './server-settings.service';
@@ -93,6 +94,7 @@ type TimeTypes = (typeof TIME_OPTIONS)[number]['value'];
     StatusBarComponent,
     RemoteControlComponent,
     AdvancedOptionsSettingsComponent,
+    NotificationSettingsComponent,
     ShipButton,
     ShipRadio,
     ShipRangeSlider,

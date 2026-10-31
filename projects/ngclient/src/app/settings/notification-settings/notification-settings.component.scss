@@ -1,0 +1,65 @@
+@use '@ship-ui/core/styles/helpers' as *;
+
+:host {
+  display: block;
+  width: 100%;
+}
+
+section {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: p2r(16);
+  padding: p2r(32 0);
+  border-top: 1px solid var(--base-4);
+
+  @include breakpoint(-milli) {
+    grid-template-columns: 1fr;
+  }
+
+  .left {
+    display: flex;
+    flex-direction: column;
+    gap: p2r(4);
+    align-items: flex-start;
+  }
+
+  .right.notification-form {
+    display: flex;
+    flex-direction: column;
+    gap: p2r(16);
+
+    .field-item {
+      display: flex;
+      flex-direction: column;
+      gap: p2r(8);
+
+      label {
+        font: var(--label-20);
+        color: var(--base-8);
+      }
+
+      input[type='text'],
+      input[type='password'] {
+        width: 100%;
+        padding: p2r(10 14);
+        border: 1px solid var(--base-4);
+        border-radius: var(--shape-2);
+        background: var(--base-2);
+        color: var(--base-8);
+        font: var(--paragraph-20);
+
+        &:focus {
+          outline: none;
+          border-color: var(--primary-color, #0284c7);
+        }
+      }
+    }
+
+    .actions {
+      display: flex;
+      gap: p2r(12);
+      align-items: center;
+      margin-top: p2r(8);
+    }
+  }
+}
