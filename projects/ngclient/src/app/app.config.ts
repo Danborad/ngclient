@@ -1,7 +1,7 @@
 /// <reference types="@angular/localize" />
 
 import { ApplicationConfig, LOCALE_ID, provideZonelessChangeDetection } from '@angular/core';
-import { PreloadAllModules, provideRouter, withComponentInputBinding, withPreloading } from '@angular/router';
+import { provideRouter, withComponentInputBinding, withPreloading } from '@angular/router';
 
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { provideHttpClient, withFetch, withInterceptors } from '@angular/common/http';
@@ -10,16 +10,18 @@ import { ShipDialogService } from '@ship-ui/core/ship-dialog';
 import { environment } from '../environments/environment';
 import { ENVIRONMENT_TOKEN } from '../environments/environment-token';
 import { routes } from './app.routes';
-import { provideHeyApiClient } from './core/openapi/client/client.gen';
-import { client } from './core/openapi/client.gen';
 import { StatusBarState } from './core/components/status-bar/status-bar.state';
 import { httpInterceptor } from './core/interceptors/http.interceptor';
 import { httpInterceptorWebsocketRelay } from './core/interceptors/websocket.interceptor';
 import { getLocale } from './core/locales/locales.utility';
+import { client } from './core/openapi/client.gen';
+import { provideHeyApiClient } from './core/openapi/client/client.gen';
 import { BytesPipe } from './core/pipes/byte.pipe';
 import { DurationFormatPipe } from './core/pipes/duration.pipe';
 import { RelativeTimePipe } from './core/pipes/relative-time.pipe';
 import { DayJsProvider } from './core/providers/dayjs';
+import { withChunkLoadErrorDialog } from './core/routing/chunk-load-error';
+import { StartupPreloadingStrategy } from './core/routing/startup-preloading.strategy';
 import { LOCALSTORAGE } from './core/services/localstorage.token';
 import { StackingDialogService } from './core/services/stacking-dialog.service';
 import { NotificationsState } from './notifications/notifications.state';
@@ -27,7 +29,12 @@ import { NotificationsState } from './notifications/notifications.state';
 export const appConfig: ApplicationConfig = {
   providers: [
     provideZonelessChangeDetection(),
-    provideRouter(routes, withComponentInputBinding(), withPreloading(PreloadAllModules)),
+    provideRouter(
+      routes,
+      withComponentInputBinding(),
+      withPreloading(StartupPreloadingStrategy),
+      withChunkLoadErrorDialog()
+    ),
     provideHttpClient(withFetch(), withInterceptors([httpInterceptorWebsocketRelay, httpInterceptor])),
     provideHeyApiClient(client),
 

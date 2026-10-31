@@ -5367,6 +5367,7 @@
       </trans-unit>
       <trans-unit id="8541023457380904996" datatype="html">
         <source>took <x id="PH" equiv-text="this.#shortDuration(item.data.Duration)"/></source>
+        <target>耗时 <x id="PH" equiv-text="this.#shortDuration(item.data.Duration)"/></target>
         <context-group purpose="location">
           <context context-type="sourcefile">projects/ngclient/src/app/backup/log/general-log/general-log.component.ts</context>
           <context context-type="linenumber">124</context>
@@ -5378,6 +5379,7 @@
       </trans-unit>
       <trans-unit id="2241926135908646658" datatype="html">
         <source>uploaded <x id="PH" equiv-text="item.data.FilesUploaded"/> file(s) (<x id="PH_1" equiv-text="this.#sizePipe.transform(item.data.SizeOfUploadedFiles)"/>)</source>
+        <target>已上传 <x id="PH" equiv-text="item.data.FilesUploaded"/> 个文件 (<x id="PH_1" equiv-text="this.#sizePipe.transform(item.data.SizeOfUploadedFiles)"/>)</target>
         <context-group purpose="location">
           <context context-type="sourcefile">projects/ngclient/src/app/backup/log/general-log/general-log.component.ts</context>
           <context context-type="linenumber">127</context>
@@ -5385,6 +5387,7 @@
       </trans-unit>
       <trans-unit id="2697710548175316617" datatype="html">
         <source>deleted <x id="PH" equiv-text="item.data.FilesDeleted"/> file(s)</source>
+        <target>已删除 <x id="PH" equiv-text="item.data.FilesDeleted"/> 个文件</target>
         <context-group purpose="location">
           <context context-type="sourcefile">projects/ngclient/src/app/backup/log/general-log/general-log.component.ts</context>
           <context context-type="linenumber">129</context>
@@ -5408,7 +5411,7 @@
       </trans-unit>
       <trans-unit id="errorCount" datatype="html">
         <source><x id="PH" equiv-text="errorCount"/> error<x id="PH_1" equiv-text="errorCount === 1 ? &apos;&apos; : &apos;s&apos;"/></source>
-        <target><x id="PH" equiv-text="errorCount"/> 错误<x id="PH_1" equiv-text="errorCount === 1 ? &apos;&apos; : &apos;s&apos;"/></target>
+        <target><x id="PH" equiv-text="errorCount"/> 项错误</target>
         <context-group purpose="location">
           <context context-type="sourcefile">projects/ngclient/src/app/backup/log/general-log/general-log.component.ts</context>
           <context context-type="linenumber">140</context>
@@ -5416,7 +5419,7 @@
       </trans-unit>
       <trans-unit id="warningCount" datatype="html">
         <source><x id="PH" equiv-text="warningCount"/> warning<x id="PH_1" equiv-text="warningCount === 1 ? &apos;&apos; : &apos;s&apos;"/></source>
-        <target><x id="PH" equiv-text="warningCount"/> 警告<x id="PH_1" equiv-text="warningCount === 1 ? &apos;&apos; : &apos;s&apos;"/></target>
+        <target><x id="PH" equiv-text="warningCount"/> 项警告</target>
         <context-group purpose="location">
           <context context-type="sourcefile">projects/ngclient/src/app/backup/log/general-log/general-log.component.ts</context>
           <context context-type="linenumber">143</context>

@@ -1,11 +1,13 @@
 import { NgTemplateOutlet } from '@angular/common';
 import {
+  afterNextRender,
   ChangeDetectionStrategy,
   Component,
   computed,
   effect,
   ElementRef,
   inject,
+  Injector,
   input,
   output,
   signal,
@@ -32,11 +34,14 @@ import {
   SearchEntriesItemDto,
   TreeNodeDto,
 } from '../../openapi';
+import { randomUUID } from '../../functions/crypto';
 import { BytesPipe } from '../../pipes/byte.pipe';
 import { FileTreeState } from '../../states/file-tree.state';
 import { SysinfoState } from '../../states/sysinfo.state';
 import { ConfirmDialogComponent } from '../confirm-dialog/confirm-dialog.component';
 import { globMatchesPath, regexMatchesPath } from './file-tree-filter-matcher';
+import { BackupSettings, RemoteSource, PagedListResult, FileTreeListingService } from './file-tree-listing.service';
+export type { BackupSettings } from './file-tree-listing.service';
 
 export enum TreeEvalEnum {
   ExcludedByParent = -2,
@@ -55,6 +60,26 @@ export const getInheritedExclusionState = (
 
   return null;
 };
+
+export const isFolderPath = (path: string): boolean =>
+  (path.startsWith('%') && path.endsWith('%') && !path.includes('/') && !path.includes('\\')) ||
+  path.endsWith('/') ||
+  path.endsWith('\\');
+
+// Filters only ever apply to paths that the backup enumerates, i.e. the selected
+// sources and everything below a selected source folder. A node outside every
+// source is never backed up, no matter what the filters say.
+export const isPathWithinSources = (
+  nodeId: string,
+  resolvedNodeId: string | null | undefined,
+  sources: string[]
+): boolean =>
+  sources.some(
+    (source) =>
+      nodeId === source ||
+      resolvedNodeId === source ||
+      (isFolderPath(source) && (nodeId.startsWith(source) || (resolvedNodeId?.startsWith(source) ?? false)))
+  );
 
 type TreeNode = TreeNodeDto & {
   accepted?: boolean;
@@ -83,14 +108,6 @@ type UnrootedSource = {
   icon: string;
 };
 
-type RemoteSource = {
-  mount: string;
-  prefix: string;
-  url: string;
-  type: string;
-  path: string;
-};
-
 interface CustomEventMap {
   inputValueChanged: InputValueChangedEvent;
 }
@@ -105,27 +122,12 @@ declare global {
   }
 }
 
-export type BackupSettings = {
-  id: string;
-  time: string;
-};
-
 // The virtual root path for the file tree, also used for Windows as the root path.
 const ROOTPATH = '/';
 
 // Suffix used to build the id of the synthetic "load more" pagination node.
 // The \0 character cannot appear in real filesystem paths, so it never collides with a real node.
 const LOAD_MORE_ID_SUFFIX = '\0load-more';
-
-// The shape returned by the paginated backend listing API
-type PagedListResult = {
-  items: any[];
-  hasMore: boolean;
-  nextOffset: number;
-};
-
-// Toggle for the v2 listing API
-const usev2Listing = true;
 
 @Component({
   selector: 'app-file-tree',
@@ -152,9 +154,11 @@ const usev2Listing = true;
 })
 export default class FileTreeComponent {
   #dupServer = inject(DuplicatiServer);
+  #listing = inject(FileTreeListingService);
   #sysInfo = inject(SysinfoState);
   #dialog = inject(ShipDialogService);
   #fileTreeState = inject(FileTreeState);
+  #injector = inject(Injector);
 
   multiSelect = input(false);
   disabled = input(false);
@@ -351,28 +355,28 @@ export default class FileTreeComponent {
               },
             })
           ).pipe(
-              map((res) => {
-                if (!res.Success || !res.Data) {
-                  console.log('Error evaluating filters', res);
-                  return null;
-                }
+            map((res) => {
+              if (!res.Success || !res.Data) {
+                console.log('Error evaluating filters', res);
+                return null;
+              }
 
-                const map = new Map<string, TreeEvalEnum>();
-                for (const r of res.Data) {
-                  if (r.Path) {
-                    let state = TreeEvalEnum.None;
-                    if (r.Included) {
-                      state = TreeEvalEnum.Included;
-                    } else if (r.MatchedFilter) {
-                      state = TreeEvalEnum.Excluded;
-                    }
-                    map.set(r.Path, state);
+              const map = new Map<string, TreeEvalEnum>();
+              for (const r of res.Data) {
+                if (r.Path) {
+                  let state = TreeEvalEnum.None;
+                  if (r.Included) {
+                    state = TreeEvalEnum.Included;
+                  } else if (r.MatchedFilter) {
+                    state = TreeEvalEnum.Excluded;
                   }
+                  map.set(r.Path, state);
                 }
-                return map;
-              }),
-              catchError(() => of(null))
-            )
+              }
+              return map;
+            }),
+            catchError(() => of(null))
+          )
         )
       );
     },
@@ -803,6 +807,9 @@ export default class FileTreeComponent {
     const inheritedExclusion = getInheritedExclusionState(parentNode?.evalState);
     if (inheritedExclusion !== null) return inheritedExclusion;
 
+    // Nodes outside every source are never backed up, so filters cannot apply to them
+    if (!this.#isNodeWithinSources(currentPaths, nodeId)) return TreeEvalEnum.None;
+
     const evalMap = this.#remoteFilterResource.value();
     if (evalMap && evalMap.has(nodeId)) {
       return evalMap.get(nodeId)!;
@@ -810,6 +817,12 @@ export default class FileTreeComponent {
 
     // If the remote does not have the node, fall back to local evaluation
     return this.#eval(currentPaths, nodeId, nodeType, parentNode);
+  }
+
+  #isNodeWithinSources(currentPaths: string[], nodeId: string): boolean {
+    const sources = this.#resolveWithRemoteSource(currentPaths.filter((x) => !this.#isFilter(x)));
+    const resolvedNodeId = this.#resolveNodeId(this.treeNodes().find((x) => x.id === nodeId)) ?? nodeId;
+    return isPathWithinSources(nodeId, resolvedNodeId, sources);
   }
 
   #eval(
@@ -849,6 +862,10 @@ export default class FileTreeComponent {
     }
 
     if (filters.length === 0) return result;
+
+    // Filters only apply to paths the backup enumerates, so a node outside every
+    // selected source keeps its state no matter what the filters match (#580)
+    if (!isPathWithinSources(nodeId, resolvedNodeId, sources)) return result;
 
     for (let i = 0; i < filters.length; i++) {
       const pathPart = filters[i];
@@ -940,8 +957,13 @@ export default class FileTreeComponent {
     return result;
   }
 
+  // A folder is partially selected when any selected path (folder or file) lies inside it.
+  // A file only counts as partially selected through a selected folder path (legacy behavior).
   isIndeterminate(currentPaths: string[], nodeId: string) {
-    return currentPaths.filter((x) => !x.startsWith('-') && this.#isFolder(x)).some((x) => x.startsWith(nodeId));
+    const isFolder = this.#isFolder(nodeId);
+    return this.#resolveWithRemoteSource(currentPaths)
+      .filter((x) => !x.startsWith('-'))
+      .some((x) => x.startsWith(nodeId) && (isFolder || this.#isFolder(x)));
   }
 
   isCurrentPathFolder() {
@@ -1076,34 +1098,230 @@ export default class FileTreeComponent {
     return parent + sep;
   }
 
+  #treeId = randomUUID();
+  #focusedTreePath = signal<string | null>(null);
+  // Folders whose listing has been fetched, so an empty folder still counts as expanded.
+  #expandedPaths = signal<ReadonlySet<string>>(new Set());
+  #typeAhead = '';
+  #typeAheadTime = 0;
+
+  visibleTreeRows = computed(() => {
+    const rows: { node: FileTreeNode; parent: string | null }[] = [];
+    const visit = (nodes: FileTreeNode[], parent: string | null) => {
+      for (const node of this.visibleTreeChildren(nodes)) {
+        rows.push({ node, parent });
+        visit(node.children, node.id ?? null);
+      }
+    };
+    visit(this.treeStructure(), null);
+    return rows;
+  });
+
+  // Selection state per visible row: null when the row cannot be selected under the current
+  // inputs, otherwise the checked/selected value. Computed once per tree change instead of per row.
+  #treeSelection = computed(() => {
+    const states = new Map<string, boolean | 'mixed' | null>();
+    const disabled = this.disabled();
+    const multiSelect = this.multiSelect();
+    const searchMode = this.searchMode();
+    const selectFiles = this.selectFiles();
+    const onlySelectFolder = this.onlySelectFolder();
+    const accepts = !!this.accepts();
+    const mounts = this.#unrootedMounts();
+
+    for (const { node } of this.visibleTreeRows()) {
+      const id = node.id ?? '';
+      const selectable =
+        !disabled &&
+        this.#isTreeNodeActionable(node, mounts) &&
+        (!searchMode || node.isSearchMatch === true) &&
+        node.evalState !== TreeEvalEnum.ExcludedByParent &&
+        !(selectFiles && node.cls === 'folder') &&
+        !(onlySelectFolder && node.cls !== 'folder') &&
+        (!accepts || node.accepted === true);
+
+      let state: boolean | 'mixed' | null = null;
+      if (selectable) {
+        if (!multiSelect) state = node.evalState === TreeEvalEnum.Included;
+        else if (node.evalState === TreeEvalEnum.Included || node.evalState === TreeEvalEnum.IncludedByParent)
+          state = true;
+        else state = node.isIndeterminate ? 'mixed' : false;
+      }
+      states.set(id, state);
+    }
+    return states;
+  });
+
+  activeTreePath = computed(() => {
+    const rows = this.visibleTreeRows();
+    const focused = this.#focusedTreePath();
+    if (rows.some(({ node }) => node.id === focused)) return focused;
+    return (
+      rows.find(({ node }) => this.canSelectTreeNode(node) && node.evalState === TreeEvalEnum.Included)?.node.id ??
+      rows[0]?.node.id ??
+      null
+    );
+  });
+
+  #unrootedMounts = computed(
+    () =>
+      new Set(
+        this.#unrootedSources()
+          .map((x) => this.#parseRemotePath(x.id)?.mount)
+          .filter((x): x is string => !!x)
+      )
+  );
+
+  // Rows that are neither selectable nor expandable through selection: pagination, the virtual root
+  // and the mount folders of unrooted sources.
+  #isTreeNodeActionable(node: FileTreeNode, mounts = this.#unrootedMounts()) {
+    return !node.isLoadMore && node.id !== ROOTPATH && !mounts.has(node.id ?? '');
+  }
+
+  visibleTreeChildren(nodes: FileTreeNode[]) {
+    return nodes.filter((node) => node.isLoadMore || !node.hidden || this._showHiddenNodes());
+  }
+
+  treeSetSize(nodes: FileTreeNode[]) {
+    return nodes.some((node) => node.isLoadMore) ? -1 : nodes.length;
+  }
+
+  treeItemId(node: FileTreeNode) {
+    return this.#treeItemIdFor(node.id ?? '');
+  }
+
+  #treeItemIdFor(path: string) {
+    return this.#treeId + '-item-' + encodeURIComponent(path);
+  }
+
+  treeGroupId(node: FileTreeNode) {
+    return this.#treeId + '-group-' + encodeURIComponent(node.id ?? '');
+  }
+
+  isTreeNodeExpanded(node: FileTreeNode) {
+    return node.cls === 'folder' && (node.children.length > 0 || this.#expandedPaths().has(node.id ?? ''));
+  }
+
+  canSelectTreeNode(node: FileTreeNode) {
+    return this.treeSelectionState(node) !== null;
+  }
+
+  treeSelectionState(node: FileTreeNode): boolean | 'mixed' | null {
+    return this.#treeSelection().get(node.id ?? '') ?? null;
+  }
+
+  rememberTreeFocus(node: FileTreeNode) {
+    this.#focusedTreePath.set(node.id ?? null);
+  }
+
+  #focusTreePath(path: string | null | undefined) {
+    if (path == null) return;
+    this.#focusedTreePath.set(path);
+    const container = this.treeContainerRef()?.nativeElement;
+    const element = container?.ownerDocument.getElementById(this.#treeItemIdFor(path));
+    if (!element || !container?.contains(element)) return;
+    element.focus({ preventScroll: true });
+    element.scrollIntoView?.({ block: 'nearest' });
+  }
+
+  // After the last page arrives the pagination row is gone; move focus to the last loaded sibling.
+  #restoreFocusAfterLoadMore(parentPath: string) {
+    afterNextRender(
+      () => {
+        const siblings = this.visibleTreeRows().filter((row) => row.parent === parentPath);
+        this.#focusTreePath(siblings.at(-1)?.node.id ?? parentPath);
+      },
+      { injector: this.#injector }
+    );
+  }
+
+  activateTreeNode(event: Event, node: FileTreeNode) {
+    if (this.disabled()) return;
+    this.#focusTreePath(node.id);
+    if (node.isLoadMore) this.loadMore(event, node);
+    else this.toggleSelectedNode(event, node);
+  }
+
+  toggleTreeNode(event: Event, node: FileTreeNode) {
+    if (this.disabled()) return;
+    this.#focusTreePath(node.id);
+    this.toggleNode(event, node.id ?? '', node);
+  }
+
+  onTreeKeydown(event: KeyboardEvent, node: FileTreeNode) {
+    if (this.disabled() || event.altKey || event.ctrlKey || event.metaKey) return;
+    const rows = this.visibleTreeRows();
+    const index = rows.findIndex((row) => row.node.id === node.id);
+    if (index < 0) return;
+    const handled = ['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End', ' ', 'Enter'].includes(
+      event.key
+    );
+    if (!handled && event.key.length !== 1) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (handled) this.#typeAhead = '';
+    switch (event.key) {
+      case 'ArrowDown':
+        this.#focusTreePath(rows[Math.min(index + 1, rows.length - 1)]?.node.id);
+        break;
+      case 'ArrowUp':
+        this.#focusTreePath(rows[Math.max(index - 1, 0)]?.node.id);
+        break;
+      case 'Home':
+        this.#focusTreePath(rows[0]?.node.id);
+        break;
+      case 'End':
+        this.#focusTreePath(rows.at(-1)?.node.id);
+        break;
+      case 'ArrowRight': {
+        if (node.cls !== 'folder') break;
+        const firstChild = this.visibleTreeChildren(node.children)[0];
+        if (firstChild) this.#focusTreePath(firstChild.id);
+        else if (!this.isTreeNodeExpanded(node) && this.isLoading() !== node.id) {
+          this.toggleNode(event, node.id ?? '', node);
+        }
+        break;
+      }
+      case 'ArrowLeft':
+        if (this.isTreeNodeExpanded(node)) this.toggleNode(event, node.id ?? '', node);
+        else this.#focusTreePath(rows[index].parent);
+        break;
+      case ' ':
+      case 'Enter':
+        if (event.repeat) break;
+        this.activateTreeNode(event, node);
+        break;
+      default: {
+        const now = Date.now();
+        this.#typeAhead =
+          now - this.#typeAheadTime > 700 ? event.key.toLowerCase() : this.#typeAhead + event.key.toLowerCase();
+        this.#typeAheadTime = now;
+        const query = [...this.#typeAhead].every((char) => char === this.#typeAhead[0])
+          ? this.#typeAhead[0]
+          : this.#typeAhead;
+        const ordered = [...rows.slice(index + 1), ...rows.slice(0, index + 1)];
+        const match = ordered.find(
+          (row) => !row.node.isLoadMore && (row.node.text ?? '').toLowerCase().startsWith(query)
+        );
+        if (match) this.#focusTreePath(match.node.id);
+      }
+    }
+  }
+
   toggleSelectedNode($event: Event, node: FileTreeNode) {
-    if (node.isLoadMore) return;
-    if (node.id === ROOTPATH) return;
-    if (
-      this.#unrootedSources()
-        .map((x) => this.#parseRemotePath(x.id)?.mount)
-        .filter((x) => x)
-        .includes(node.id ?? '')
-    )
-      return;
+    if (!this.#isTreeNodeActionable(node)) return;
 
     $event.stopPropagation();
 
-    // In search mode, only allow selecting search matches
-    if (this.searchMode() && !node.isSearchMatch) return;
-
-    if (node.evalState === TreeEvalEnum.ExcludedByParent) return;
-
+    // When only files can be selected, activating a folder expands or collapses it instead
     if (this.selectFiles() && node.cls === 'folder') {
-      this.toggleNode($event, node.id as string, node);
+      const reachable = (!this.searchMode() || node.isSearchMatch) && node.evalState !== TreeEvalEnum.ExcludedByParent;
+      if (reachable) this.toggleNode($event, node.id as string, node);
       return;
     }
 
-    if (this.onlySelectFolder() && node.cls !== 'folder') return;
-
-    const accepts = this.accepts();
-
-    if (accepts && !node.accepted) return;
+    // Same eligibility rules as the aria-checked/aria-selected state of the row
+    if (!this.canSelectTreeNode(node)) return;
 
     const currentPaths = this.currentPathArray();
     const currentPathsWithRemotes = this.#resolveWithRemoteSource(currentPaths);
@@ -1145,12 +1363,13 @@ export default class FileTreeComponent {
 
   toggleNode($event: Event, path: string, node: FileTreeNode | null = null) {
     $event.stopPropagation();
-    if (node?.cls === 'folder') {
-      if (node?.children.length) {
-        this.treeNodes.update((y) => y.filter((z) => !z.id?.startsWith(node.id as string) || z.id === node.id));
-      } else {
-        this.#getPath(node, path);
-      }
+    if (node?.cls !== 'folder') return;
+    if (this.isTreeNodeExpanded(node)) {
+      const prefix = node.id as string;
+      this.#expandedPaths.update((paths) => new Set([...paths].filter((x) => !x.startsWith(prefix))));
+      this.treeNodes.update((y) => y.filter((z) => !z.id?.startsWith(prefix) || z.id === node.id));
+    } else {
+      this.#getPath(node, path);
     }
   }
 
@@ -1190,30 +1409,28 @@ export default class FileTreeComponent {
             },
           })
         ).subscribe({
-            next: () => {
-              this.currentPath.set(fullPath);
-              this.#getPath(null, currentPath);
-              setTimeout(() => {
-                this.#findActiveNodeAndScrollTo();
-              }, 500);
-              this.createFolderDialogOpen.set(false);
-            },
-            error: (err) => {
-              const m = err?.message?.match(/user-information\s*:\s*(.*?)(?:\s*,|$)/i);
-              const message = m
-                ? m[1]
-                : err?.message || $localize`An error occurred while trying to create the folder.`;
+          next: () => {
+            this.currentPath.set(fullPath);
+            this.#getPath(null, currentPath);
+            setTimeout(() => {
+              this.#findActiveNodeAndScrollTo();
+            }, 500);
+            this.createFolderDialogOpen.set(false);
+          },
+          error: (err) => {
+            const m = err?.message?.match(/user-information\s*:\s*(.*?)(?:\s*,|$)/i);
+            const message = m ? m[1] : err?.message || $localize`An error occurred while trying to create the folder.`;
 
-              this.#dialog.open(ConfirmDialogComponent, {
-                data: {
-                  title: $localize`Cannot create folder`,
-                  message: message,
-                  confirmText: $localize`OK`,
-                  cancelText: undefined,
-                },
-              });
-            },
-          });
+            this.#dialog.open(ConfirmDialogComponent, {
+              data: {
+                title: $localize`Cannot create folder`,
+                message: message,
+                confirmText: $localize`OK`,
+                cancelText: undefined,
+              },
+            });
+          },
+        });
       }
     } else {
       this.createFolderDialogOpen.set(false);
@@ -1258,232 +1475,24 @@ export default class FileTreeComponent {
     return input;
   }
 
-  #getFilesystemPath(path: string) {
-    return defer(() =>
-      this.#dupServer.postApiV1Filesystem({
-        query: {
-          showHidden: true,
-          onlyFolders: !this.showFiles(),
-        },
-        body: {
-          path,
-        },
-      })
-    );
-  }
-
-  #getBackendFiles(
-    path: string | null,
-    remote: RemoteSource | null,
-    destinationType: RemoteDestinationType,
-    offset: number | null = null
-  ) {
-    return defer(() =>
-      this.#dupServer.postApiV2DestinationList({
-        body: {
-          BackupId: this.backupId() ?? null,
-          DestinationUrl: remote?.url ?? this.destinationUrl() ?? null,
-          ConnectionStringId: this.connectionStringId() ?? null,
-          DestinationType: destinationType,
-          SourcePrefix: remote?.prefix ?? this.sourcePrefix() ?? null,
-          Path: path,
-          Offset: offset,
-          Limit: 100,
-        },
-      })
-    ).pipe(
-        map((res) => {
-          const rawItems = res.Data?.Items ?? [];
-
-          const result: PagedListResult = {
-            items: rawItems
-              .map((x) => ({
-                ...x,
-                Path: (remote?.prefix ?? '') + x.Path,
-              }))
-              .filter((x) => x.Metadata == null || !x.Metadata['ExtType']),
-            hasMore: res.Data?.HasMore ?? false,
-            nextOffset: (res.Data?.Offset ?? offset ?? 0) + rawItems.length,
-          };
-
-          return result;
-        })
-      );
-  }
-
-  #getMicrosoft365Files(path: string | null, remote: RemoteSource | null) {
-    return defer(() =>
-      this.#dupServer.postApiV1WebmoduleByModulekey({
-        path: { modulekey: 'office365' },
-        body: {
-          'backup-id': this.backupId() ?? '',
-          'source-prefix': remote?.prefix ?? this.sourcePrefix() ?? '',
-          operation: 'ListDestinationRestoreTargets',
-          url: remote?.url ?? this.destinationUrl() ?? '',
-          path: path ?? '/',
-        },
-      })
-    ).pipe(
-        map((res) => {
-          const d = res.Result;
-          if (!d) {
-            throw new Error('No result returned');
-          }
-          if (res.Status !== 'OK') {
-            throw new Error(d['error'] ?? 'An error occured');
-          }
-          return Object.keys(d).map((key) => {
-            return {
-              Path: (remote?.prefix ?? '') + key,
-              Metadata: JSON.parse(d[key]),
-            };
-          });
-        })
-      );
-  }
-
-  #getGoogleWorkspaceFiles(path: string | null, remote: RemoteSource | null) {
-    return defer(() =>
-      this.#dupServer.postApiV1WebmoduleByModulekey({
-        path: { modulekey: 'googleworkspace' },
-        body: {
-          'backup-id': this.backupId() ?? '',
-          'source-prefix': remote?.prefix ?? this.sourcePrefix() ?? '',
-          operation: 'ListDestinationRestoreTargets',
-          url: remote?.url ?? this.destinationUrl() ?? '',
-          path: path ?? '/',
-        },
-      })
-    ).pipe(
-        map((res) => {
-          const d = res.Result;
-          if (!d) {
-            throw new Error('No result returned');
-          }
-
-          if (res.Status !== 'OK') {
-            throw new Error(d['error'] ?? 'An error occured');
-          }
-          return Object.keys(d).map((key) => {
-            return {
-              Path: (remote?.prefix ?? '') + key,
-              Metadata: JSON.parse(d[key]),
-            };
-          });
-        })
-      );
-  }
-
-  #getDiskImagePaths(path: string | null) {
-    return defer(() =>
-      this.#dupServer.postApiV1WebmoduleByModulekey({
-        path: { modulekey: 'diskimage' },
-        body: {
-          operation: 'ListDestinationRestoreTargets',
-          path: path ?? '/',
-        },
-      })
-    ).pipe(
-        map((res) => {
-          const d = res.Result as {
-            [key: string]: string;
-          };
-          return Object.keys(d).map((key) => {
-            return {
-              Path: key,
-              Metadata: JSON.parse(d[key]),
-            };
-          });
-        })
-      );
-  }
-
-  #getBackupFiles(path: string | null) {
-    const backupSettings = this.backupSettings()!;
-    if (this.#sysInfo.hasV2ListOperations()) {
-      return defer(() =>
-        this.#dupServer.postApiV2BackupListFolder({
-          body: {
-            BackupId: backupSettings.id,
-            Time: backupSettings.time,
-            Paths: path ? [path] : null,
-            PageSize: 0, // TODO: Add pagination support
-            Page: 0,
-            ReturnExtended: this.customRemoteMode() !== null || this.loadExtendedData(),
-          },
-        })
-      ).pipe(map((res) => res.Data ?? []));
-    } else {
-      return defer(() =>
-        this.#dupServer.getApiV1BackupByIdFiles({
-          path: { id: backupSettings.id + '' },
-          query: {
-            'prefix-only': false,
-            'folder-contents': true,
-            time: backupSettings.time,
-            filter: path ? '@' + path : undefined,
-          },
-        })
-      ).pipe(map((res) => res['Files'] ?? []));
-    }
-  }
-
   #getFilePath(path: string, remote: RemoteSource | null | undefined, offset: number | null = null) {
-    if (remote?.type === 'office365') {
-      if (this.#sysInfo.hasV2ListBackendOperations() && usev2Listing)
-        return this.#getBackendFiles(remote.path, remote, 'SourceProvider', offset);
-
-      return this.#getMicrosoft365Files(remote.path, remote);
-    }
-
-    if (this.customRemoteMode() === 'o365') {
-      if (this.#sysInfo.hasV2ListBackendOperations() && usev2Listing)
-        return this.#getBackendFiles(path, null, 'SourceProvider', offset);
-
-      return this.#getMicrosoft365Files(path, null);
-    }
-
-    if (remote?.type === 'googleworkspace') {
-      if (this.#sysInfo.hasV2ListBackendOperations() && usev2Listing)
-        return this.#getBackendFiles(remote.path, remote, 'SourceProvider', offset);
-
-      return this.#getGoogleWorkspaceFiles(remote.path, remote);
-    }
-
-    if (this.customRemoteMode() === 'gsuite') {
-      if (this.#sysInfo.hasV2ListBackendOperations() && usev2Listing)
-        return this.#getBackendFiles(path, null, 'SourceProvider', offset);
-
-      return this.#getGoogleWorkspaceFiles(path, null);
-    }
-
-    if (remote?.type === 'diskimage') {
-      if (this.#sysInfo.hasV2ListBackendOperations() && usev2Listing)
-        return this.#getBackendFiles(remote.path, remote, 'SourceProvider', offset);
-
-      return this.#getDiskImagePaths(remote.path);
-    }
-
-    if (this.customRemoteMode() === 'diskimage') {
-      if (this.#sysInfo.hasV2ListBackendOperations() && usev2Listing)
-        return this.#getBackendFiles(path, null, 'SourceProvider', offset);
-      return this.#getDiskImagePaths(path);
-    }
-
-    // Any other remote source (e.g. smb, sftp) has no v1 fallback, so use the v2 list endpoint when available
-    if (remote && this.#sysInfo.hasV2ListBackendOperations() && usev2Listing) {
-      return this.#getBackendFiles(remote.path, remote, 'SourceProvider', offset);
-    }
-
-    if (this.isByBackupSettings()) {
-      return this.#getBackupFiles(path);
-    }
-
-    if (this.customRemoteMode() === 'backend') {
-      return this.#getBackendFiles(path, null, this.destinationType(), offset);
-    }
-
-    return this.#getFilesystemPath(path);
+    return this.#listing.list(
+      path,
+      remote,
+      {
+        showFiles: this.showFiles,
+        backupId: this.backupId,
+        destinationUrl: this.destinationUrl,
+        connectionStringId: this.connectionStringId,
+        sourcePrefix: this.sourcePrefix,
+        destinationType: this.destinationType,
+        backupSettings: this.backupSettings,
+        customRemoteMode: this.customRemoteMode,
+        loadExtendedData: this.loadExtendedData,
+        isByBackupSettings: this.isByBackupSettings,
+      },
+      offset
+    );
   }
 
   #fetchPathSegmentsRecursively(path: string) {
@@ -1590,11 +1599,7 @@ export default class FileTreeComponent {
   }
 
   #isFolder(path: string): boolean {
-    return (
-      (path.startsWith('%') && path.endsWith('%') && !path.includes('/') && !path.includes('\\')) ||
-      path.endsWith('/') ||
-      path.endsWith('\\')
-    );
+    return isFolderPath(path);
   }
 
   #isFilter(path: string): boolean {
@@ -1708,6 +1713,12 @@ export default class FileTreeComponent {
               return arrayUniqueByKey as TreeNode[];
             }
           });
+
+          this.#expandedPaths.update((paths) => (paths.has(newPath) ? paths : new Set([...paths, newPath])));
+
+          if (node?.isLoadMore && !result.hasMore && this.#focusedTreePath() === node.id) {
+            this.#restoreFocusAfterLoadMore(newPath);
+          }
         },
         error: (err) => {
           this.errorMessage.set(err.message);
