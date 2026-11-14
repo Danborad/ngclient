@@ -24,32 +24,75 @@
     overflow: hidden;
     flex: 1 0;
 
+    // One header row: the projected label, then the footer with the hidden-files toggle, then the
+    // maximize button; the label has no area of its own and lands in the first free cell
     .section {
       height: auto;
       overflow: hidden;
       flex: 1 0;
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: 1fr auto auto;
       grid-template-rows: auto 1fr;
       grid-template-areas:
-        'label toggle'
-        'tree tree';
+        'label toggle maximize'
+        'tree tree tree';
+      align-items: center;
     }
 
     .browse-files {
       resize: none;
       height: initial;
       grid-area: tree;
+      align-self: stretch;
     }
 
-    label {
-      grid-area: label;
+    .tree-header {
+      display: contents;
+    }
+
+    .maximize-toggle {
+      grid-area: maximize;
+    }
+
+    .footer {
+      grid-area: toggle;
     }
 
     sh-toggle {
-      grid-area: toggle;
       flex-direction: row-reverse;
     }
+  }
+
+  // Lifted above the floating service hub (z-index 5000); native dialogs live in the top layer and stay above it.
+  &.maximized {
+    .section {
+      position: fixed;
+      inset: 0;
+      z-index: 5500;
+      padding: p2r(24);
+      background: var(--base-1);
+      overflow: hidden;
+    }
+
+    .browse-files {
+      flex: 1 1 auto;
+      height: auto;
+      min-height: 0;
+      resize: none;
+    }
+  }
+}
+
+.tree-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: p2r(8);
+  min-height: p2r(28);
+
+  .maximize-toggle {
+    flex: 0 0 auto;
+    margin-left: auto;
   }
 }
 
@@ -133,6 +176,13 @@
         opacity: 0.6;
       }
 
+      .modified {
+        opacity: 0.6;
+        margin-left: p2r(8);
+        font-size: p2r(12);
+        white-space: nowrap;
+      }
+
       &.generated {
         opacity: 0.6;
 
@@ -176,7 +226,30 @@
         align-items: center;
       }
 
-      .icon {
+      // "Choose what to include" on folder rows; highlighted when the folder is picked
+      .row-action {
+        flex: 0 0 auto;
+        margin-right: p2r(4);
+        // Compact so folder rows keep the same height as file rows
+        width: p2r(24);
+        height: p2r(24);
+        min-width: 0;
+        min-height: 0;
+        padding: 0;
+        margin-block: p2r(-2);
+
+        sh-icon {
+          font-size: p2r(16);
+        }
+
+        &.picked {
+          color: var(--primary-9);
+        }
+      }
+
+      // The expand and folder icon of a row, not the row's buttons that share the "icon" class
+      .icon:not(button) {
+        position: relative;
         width: p2r(48);
         gap: p2r(4);
         height: p2r(24);
@@ -188,6 +261,21 @@
         .provider-icon {
           width: p2r(16);
           height: p2r(16);
+        }
+
+        // Corner badge layered over the folder/file icon (symlink, locked, drive, special
+        // folder, ...), like Finder/Explorer, so the entry type stays readable in every state.
+        // Its color comes from the same `primary` class as the folder icon underneath.
+        .icon-badge {
+          position: absolute;
+          right: p2r(2);
+          bottom: p2r(1);
+          font-size: p2r(11);
+          line-height: 1;
+          border-radius: 50%;
+          background: var(--base-1);
+          box-shadow: 0 0 0 p2r(1) var(--base-1);
+          pointer-events: none;
         }
 
         &.file {

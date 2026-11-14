@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
-import { toSignal } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { FormBuilder, FormsModule, ReactiveFormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { defer } from 'rxjs';
@@ -58,7 +58,7 @@ export default class CommandlineComponent {
   #routeParamsSignal = toSignal(this.#route.params);
   commandOptions = toSignal(defer(() => this.#commandline.getApiV1Commandline()));
   isSubmitting = signal(false);
-  optionsFields = this.#backupState.optionsFields;
+  optionsForm = this.#backupState.optionsForm;
 
   standardFields = fb.group({
     'backup-id': fb.control(''),
@@ -71,6 +71,17 @@ export default class CommandlineComponent {
     command: fb.control('backup'),
     targetUrl: fb.control(''),
     arguments: fb.control(''),
+  });
+
+  // The backup sources, which are the arguments of the backup command only
+  #sources = '';
+
+  // Other commands take other arguments, test takes a number of samples (duplicati#4082),
+  // so the sources are only kept while they are unchanged and the command is backup
+  #commandChanges = this.baseCmdForm.controls.command.valueChanges.pipe(takeUntilDestroyed()).subscribe((command) => {
+    const args = this.baseCmdForm.controls.arguments;
+    if (command !== 'backup' && args.value === this.#sources) args.setValue('');
+    else if (command === 'backup' && args.value === '') args.setValue(this.#sources);
   });
 
   finishedLoading = this.#backupState.finishedLoading;
@@ -96,22 +107,21 @@ export default class CommandlineComponent {
       this.#dupServer.getApiV1BackupById({
         path: { id },
       })
-    )
-      .subscribe({
-        next: (res: GetBackupResultDto) => {
-          this.#backupState.mapScheduleToForm(res.Schedule ?? null);
+    ).subscribe({
+      next: (res: GetBackupResultDto) => {
+        this.#backupState.mapScheduleToForm(res.Schedule ?? null);
 
-          if (res.Backup) {
-            this.#backupState.mapGeneralToForm(res.Backup);
-            this.mapStandardFieldsToForm(res.Backup);
-            this.mapBaseCmdToForm(res.Backup);
-            this.#backupState.mapOptionsToForms(res.Backup, true);
-          }
+        if (res.Backup) {
+          this.#backupState.mapGeneralToForm(res.Backup);
+          this.mapStandardFieldsToForm(res.Backup);
+          this.mapBaseCmdToForm(res.Backup);
+          this.#backupState.mapOptionsToForms(res.Backup, true);
+        }
 
-          this.applyStateFromUrl();
-          this.#backupState.finishedLoading.set(true);
-        },
-      });
+        this.applyStateFromUrl();
+        this.#backupState.finishedLoading.set(true);
+      },
+    });
   }
 
   mapStandardFieldsToForm(backup: BackupDto) {
@@ -164,19 +174,18 @@ export default class CommandlineComponent {
       this.#dupServer.postApiV1Commandline({
         body: command,
       })
-    )
-      .subscribe({
-        next: (response) => {
-          if (response.Status === 'OK') {
-            this.#router.navigate(['backup', this.backupId(), 'commandline', response.ID], {
-              queryParams: { state: stateId },
-            });
-          }
-        },
-        error: () => {
-          this.isSubmitting.set(false);
-        },
-      });
+    ).subscribe({
+      next: (response) => {
+        if (response.Status === 'OK') {
+          this.#router.navigate(['backup', this.backupId(), 'commandline', response.ID], {
+            queryParams: { state: stateId },
+          });
+        }
+      },
+      error: () => {
+        this.isSubmitting.set(false);
+      },
+    });
   }
 
   mapBaseCmdToForm(backup: BackupDto) {
@@ -184,9 +193,10 @@ export default class CommandlineComponent {
 
     if (!targetBaseUrl) return;
 
+    this.#sources = backup.Sources?.join('\n') ?? '';
     this.baseCmdForm.patchValue({
       targetUrl: targetBaseUrl ?? '',
-      arguments: backup.Sources?.join('\n') ?? '',
+      arguments: this.baseCmdForm.value.command === 'backup' ? this.#sources : '',
     });
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "@duplicati/ngclient",
-  "version": "0.0.244",
+  "version": "0.0.249",
   "license": "MIT",
   "contributors": [
     "sp90",
@@ -39,7 +39,7 @@
     "check:locales": "bun scripts/generate-locales.ts --check",
     "test:locales": "bun test ./scripts/locale-catalog.test.ts",
     "test:build": "bun test ./scripts/build.test.ts",
-    "measure:startup": "playwright test --config playwright.startup.config.ts"
+    "measure:startup": "PLAYWRIGHT_MODE=startup playwright test"
   },
   "dependencies": {
     "@angular/common": "22.2.1",
@@ -63,7 +63,7 @@
     "@angular/compiler-cli": "22.2.1",
     "@hey-api/openapi-ts": "^0.99.0",
     "@playwright/test": "1.63.0",
-    "@types/node": "24",
+    "@types/node": "26",
     "baseline-browser-mapping": "^2.11.27",
     "istanbul-lib-instrument": "^6.0.3",
     "jsdom": "^28.0.0",

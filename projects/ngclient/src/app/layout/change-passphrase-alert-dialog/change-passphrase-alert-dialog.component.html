@@ -9,31 +9,29 @@
     <br />
     If you open Duplicati from the tray icon, you do not need a passphrase, but if you plan to open it from another
     location you need to set a passphrase you know. Do you want to set a passphrase now?
+    <br />
+    <br />
+    Setting the passphrase signs you out, and you need to sign in again with the new passphrase.
   </sh-alert>
 
   <sh-form-field>
     <label for="password" i18n>Passphrase</label>
     <input
       type="password"
-      name="password"
       autocomplete="disabled"
       i18n-placeholder
       placeholder="Enter new password"
-      tabindex="1"
-      [(ngModel)]="passphrase" />
+      [formField]="passphraseForm.passphrase" />
   </sh-form-field>
 
   <sh-form-field>
     <label for="repeatPassword" i18n>Repeat passphrase</label>
     <input
       type="password"
-      name="repeatPassword"
       autocomplete="disabled"
       i18n-placeholder
       placeholder="Repeat password"
-      tabindex="2"
-      [disabled]="passphrase().length === 0"
-      [(ngModel)]="repeatPassphrase" />
+      [formField]="passphraseForm.repeatPassphrase" />
 
     @if (passphrase().length !== 0 && passphrase() === repeatPassphrase()) {
       <sh-icon suffix class="sh-success">check</sh-icon>

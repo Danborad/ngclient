@@ -12,6 +12,30 @@ describe('SysinfoState server capabilities', () => {
   }
 
   it.each([
+    [undefined, false],
+    [[], false],
+    [['v1:ipc:controller'], false],
+    [['v1:ipc:controller', 'v2:mcp:server'], true],
+  ])('reports the MCP server when the server lists its extension: %j', (extensions, expected) => {
+    const state = setup();
+    expect(state.hasMcpServer()).toBe(false);
+    state.systemInfo.set({ APIExtensions: extensions } as SystemInfoDto);
+    expect(state.hasMcpServer()).toBe(expected);
+  });
+
+  it.each([
+    [undefined, false],
+    [[], false],
+    [[{ Name: 'store-task-config' }], false],
+    [[{ Name: 'store-task-config' }, { Name: 'use-file-watcher' }], true],
+  ])('reports the file watcher when the server lists its option: %j', (serverOnlyOptions, expected) => {
+    const state = setup();
+    expect(state.hasFileWatcher()).toBe(false);
+    state.systemInfo.set({ ServerOnlyOptions: serverOnlyOptions } as SystemInfoDto);
+    expect(state.hasFileWatcher()).toBe(expected);
+  });
+
+  it.each([
     [[], false],
     [['v2:backup:list-filesets'], false],
     [['v2:backup:list-folder'], false],
@@ -34,6 +58,43 @@ describe('SysinfoState server capabilities', () => {
     const state = setup();
     state.systemInfo.set({ APIExtensions: extensions } as SystemInfoDto);
     expect(state.hasV2BrokenFiles()).toBe(expected);
+  });
+
+  it.each([
+    [[], false],
+    [['v2:backup:purge-files'], false],
+    [['v2:backup:purge-files', 'v2:backup:purge-files:suppress-compact'], true],
+  ])('reports purge-files compact suppression only when the server advertises it: %j', (extensions, expected) => {
+    const state = setup();
+    expect(state.hasV2PurgeFilesSuppressCompact()).toBe(false);
+    state.systemInfo.set({ APIExtensions: extensions } as SystemInfoDto);
+    expect(state.hasV2PurgeFilesSuppressCompact()).toBe(expected);
+  });
+
+  it.each([
+    [[], false],
+    [['v1:backup:sync-mode'], false],
+    [['v1:backup:enable-disable'], true],
+  ])('reports backup enable/disable support only when the server advertises it: %j', (extensions, expected) => {
+    const state = setup();
+    expect(state.hasBackupEnableDisable()).toBe(false);
+    state.systemInfo.set({ APIExtensions: extensions } as SystemInfoDto);
+    expect(state.hasBackupEnableDisable()).toBe(expected);
+  });
+
+  it.each([
+    [[], false, false],
+    [['v1:backup:sync-mode'], false, false],
+    [['v1:backup:sync-snapshots'], true, false],
+    [['v1:backup:sync-restore'], false, true],
+    [['v1:backup:sync-snapshots', 'v1:backup:sync-restore'], true, true],
+  ])('reports Sync snapshots and Sync restore separately: %j', (extensions, snapshots, restore) => {
+    const state = setup();
+    expect(state.hasSyncSnapshots()).toBe(false);
+    expect(state.hasSyncRestore()).toBe(false);
+    state.systemInfo.set({ APIExtensions: extensions } as SystemInfoDto);
+    expect(state.hasSyncSnapshots()).toBe(snapshots);
+    expect(state.hasSyncRestore()).toBe(restore);
   });
 
   it.each([

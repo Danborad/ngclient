@@ -2,16 +2,15 @@ import {
   afterRenderEffect,
   ChangeDetectionStrategy,
   Component,
-  computed,
   ElementRef,
   inject,
+  input,
   OnDestroy,
   signal,
   viewChild,
 } from '@angular/core';
-import { toSignal } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, RouterLink } from '@angular/router';
-import { defer } from 'rxjs';
+import { RouterLink } from '@angular/router';
+import { catchError, defer, EMPTY, exhaustMap, interval, take } from 'rxjs';
 import { ShipButton } from '@ship-ui/core/ship-button';
 import { ShipIcon } from '@ship-ui/core/ship-icon';
 import StatusBarComponent from '../../core/components/status-bar/status-bar.component';
@@ -41,11 +40,8 @@ const getErrorStatus = (error: unknown): number | undefined => {
 })
 export default class CommandlineResultComponent implements OnDestroy {
   #dupServer = inject(DuplicatiServer);
-  #route = inject(ActivatedRoute);
-  #routeParamsSignal = toSignal(this.#route.params);
-  #queryParamsSignal = toSignal(this.#route.queryParams);
-  runId = computed(() => this.#routeParamsSignal()?.['runId']);
-  stateId = computed(() => this.#queryParamsSignal()?.['state']);
+  runId = input.required<string>();
+  stateId = input<string | undefined>(undefined, { alias: 'state' });
 
   offset = signal<number>(0);
   status = signal<Status>('starting');
@@ -62,18 +58,27 @@ export default class CommandlineResultComponent implements OnDestroy {
     logOutput.scrollTop = logOutput.scrollHeight;
   });
 
-  interval = setInterval(() => this.#poll(), 1000);
-
-  #poll() {
-    defer(() =>
-      this.#dupServer.getApiV1CommandlineByRunid({
-        path: { runid: this.runId()! },
-        query: {
-          offset: this.offset(),
-          pagesize: 100,
-        },
-      })
-    ).subscribe({
+  #polling = interval(1000)
+    .pipe(
+      exhaustMap(() =>
+        defer(() =>
+          this.#dupServer.getApiV1CommandlineByRunid({
+            path: { runid: this.runId()! },
+            query: {
+              offset: this.offset(),
+              pagesize: 100,
+            },
+          })
+        ).pipe(
+          take(1),
+          catchError((error) => {
+            this.#handleError(error);
+            return EMPTY;
+          })
+        )
+      )
+    )
+    .subscribe({
       next: (response) => {
         const items = response.Items ?? [];
         const nextOffset = (response.Offset ?? this.offset()) + items.length;
@@ -82,9 +87,7 @@ export default class CommandlineResultComponent implements OnDestroy {
         this.offset.set(nextOffset);
         this.evalStatus(response);
       },
-      error: (error) => this.#handleError(error),
     });
-  }
 
   evalStatus(res: CommandLineLogOutputDto) {
     if (res.Started !== true) return;
@@ -125,7 +128,7 @@ export default class CommandlineResultComponent implements OnDestroy {
   }
 
   #stopPolling() {
-    clearInterval(this.interval);
+    this.#polling.unsubscribe();
   }
 
   ngOnDestroy() {

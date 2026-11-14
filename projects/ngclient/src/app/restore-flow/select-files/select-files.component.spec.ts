@@ -28,7 +28,7 @@ describe('SelectFilesComponent restore database repair', () => {
     TestBed.resetTestingModule();
   });
 
-  function setup(isTemporary = true) {
+  function setup(isTemporary = true, OperationType: 'Backup' | 'Sync' = 'Backup') {
     const form = createRestoreSelectFilesForm();
     const flow = {
       selectFilesForm: form,
@@ -36,13 +36,14 @@ describe('SelectFilesComponent restore database repair', () => {
       selectOption: signal('0'),
       backupId: signal('temp-42'),
       versionOptionsLoading: signal(true),
+      waitingForBackup: signal(false),
       versionOptions: signal([
         { Version: 0, Time: time },
         { Version: 1, Time: otherTime },
       ]),
       isFileRestore: signal(true),
       extendedDataType: signal<string | null>(null),
-      backup: signal({ Backup: { IsTemporary: isTemporary } }),
+      backup: signal({ Backup: { IsTemporary: isTemporary, OperationType } }),
     };
     const repairs: Subject<{ ID: number }>[] = [];
     const tasks: Subject<GetTaskStateDto>[] = [];
@@ -105,6 +106,13 @@ describe('SelectFilesComponent restore database repair', () => {
     expect(component.isRepairing()).toBe(true);
     expect(component.loadedVersions()[versionId]).toBeUndefined();
     expect(listFolder).not.toHaveBeenCalled();
+  });
+
+  it('lists folders of a temporary Sync job without a database repair and without search', () => {
+    const { component, repair, listFolder } = setup(true, 'Sync');
+    expect(repair).not.toHaveBeenCalled();
+    expect(listFolder).toHaveBeenCalledTimes(1);
+    expect(component.canSearch()).toBe(false);
   });
 
   it('lists folders without repair for a non-temporary backup', () => {

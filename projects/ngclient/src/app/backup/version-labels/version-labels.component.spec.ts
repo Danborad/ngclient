@@ -44,7 +44,7 @@ describe('version label save sequencing', () => {
     fixture.detectChanges();
     await fixture.whenStable();
     fixture.detectChanges();
-    return { component: fixture.componentInstance, list, rows, responses, save, navigate, open };
+    return { fixture, component: fixture.componentInstance, list, rows, responses, save, navigate, open };
   }
   it('loads newest first and normalizes editable labels without mutating API rows', async () => {
     const { component, list, rows } = await setup();
@@ -55,6 +55,26 @@ describe('version label save sequencing', () => {
     ]);
     expect(rows.map((x) => x.Version)).toEqual([3, 0]);
     expect(rows[1].Label).toBeNull();
+  });
+  it('saves the version associated with the edited Signal Form row', async () => {
+    const { component, save } = await setup();
+    component.labelsForm[0].EditedLabel().value.set('  Milestone  ');
+    expect(component.versions()[0].Version).toBe(0);
+    expect(component.changedItems()).toHaveLength(1);
+    component.saveLabels();
+    expect(save).toHaveBeenCalledExactlyOnceWith({ body: { BackupId: '42', Version: 0, Label: 'Milestone' } });
+  });
+
+  it('disables all form rows during saving and retains edits after a failed request', async () => {
+    const { component, responses } = await setup();
+    component.labelsForm[0].EditedLabel().value.set('Keep me');
+    expect(component.labelsForm[0].EditedLabel().disabled()).toBe(false);
+    component.saveLabels();
+    expect(component.labelsForm[0].EditedLabel().disabled()).toBe(true);
+    expect(component.labelsForm[1].EditedLabel().disabled()).toBe(true);
+    responses[0].error(new Error('database busy'));
+    expect(component.labelsForm[0].EditedLabel().disabled()).toBe(false);
+    expect(component.labelsForm[0].EditedLabel().value()).toBe('Keep me');
   });
   it('does not save or navigate when edits only add whitespace', async () => {
     const { component, save, navigate } = await setup();
@@ -110,5 +130,44 @@ describe('version label save sequencing', () => {
     responses[2].complete();
     expect(component.isSaving()).toBe(false);
     expect(navigate).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a second save while a label write is pending', async () => {
+    const { component, save, responses } = await setup();
+    component.updateLabel(0, 'Latest');
+    component.saveLabels();
+    component.saveLabels();
+    expect(save).toHaveBeenCalledTimes(1);
+    responses[0].complete();
+  });
+
+  it('never redirects queued writes to another backup before change detection', async () => {
+    const { fixture, component, save, responses, navigate } = await setup();
+    component.updateLabel(0, 'Latest');
+    component.updateLabel(3, 'Archive');
+    component.saveLabels();
+    fixture.componentRef.setInput('id', 'other');
+    responses[0].complete();
+    expect(save).toHaveBeenLastCalledWith({ body: { BackupId: '42', Version: 3, Label: 'Archive' } });
+    responses[1].complete();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it.each(['navigate', 'destroy'] as const)('stops pending and queued writes on %s', async (action) => {
+    const { fixture, component, save, responses, navigate, open } = await setup();
+    component.updateLabel(0, 'Latest');
+    component.updateLabel(3, 'Archive');
+    component.saveLabels();
+    if (action === 'navigate') {
+      fixture.componentRef.setInput('id', 'other');
+      fixture.detectChanges();
+    } else {
+      fixture.destroy();
+    }
+    responses[0].complete();
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(component.isSaving()).toBe(false);
+    expect(navigate).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, viewChild } from '@angular/core';
 import { FormsModule, ReactiveFormsModule } from '@angular/forms';
 import { ShipAlert } from '@ship-ui/core/ship-alert';
 import { ShipButton } from '@ship-ui/core/ship-button';
@@ -16,18 +16,26 @@ import { ShipToggle } from '@ship-ui/core/ship-toggle';
 import { ShipTooltip } from '@ship-ui/core/ship-tooltip';
 import { finalize } from 'rxjs';
 import StatusBarComponent from '../core/components/status-bar/status-bar.component';
-import { LANGUAGES } from '../core/locales/locales.utility';
+import { LANGUAGES, mapLocale } from '../core/locales/locales.utility';
 import { LOCALSTORAGE } from '../core/services/localstorage.token';
+import { AppAuthState } from '../core/states/app-auth.state';
 import { SysinfoState } from '../core/states/sysinfo.state';
 import { LayoutState } from '../layout/layout.state';
 import AdvancedOptionsSettingsComponent from './advanced-options-settings/advanced-options-settings.component';
+import { getMcpServerDisableWarning } from './mcp-tokens/mcp-token-settings';
+import { McpTokensComponent } from './mcp-tokens/mcp-tokens.component';
 import { NotificationSettingsComponent } from './notification-settings/notification-settings.component';
 import { RemoteControlComponent } from './remote-control/remote-control.component';
 import { RemoteControlState } from './remote-control/remote-control.state';
 import { ServerSettingsService } from './server-settings.service';
+import {
+  SERVER_TIMEZONE_KEY,
+  toServerTimezoneControlValue,
+  toServerTimezoneOptions,
+  toServerTimezoneSetting,
+} from './server-timezone-settings';
 
-import { CreateSignalOptions, WritableSignal } from '@angular/core';
-import { createSignal, SIGNAL, SignalGetter, signalSetFn, signalUpdateFn } from '@angular/core/primitives/signals';
+import { debounceSignal } from '../core/functions/debounce-signal';
 import { ConfirmDialogComponent } from '../core/components/confirm-dialog/confirm-dialog.component';
 import { FileTreeState } from '../core/states/file-tree.state';
 import { RelayconfigState } from '../core/states/relayconfig.state';
@@ -37,31 +45,6 @@ import {
   USAGE_STATISTICS_OPTIONS,
   UsageStatisticsControlValue,
 } from './usage-statistics-settings';
-
-export function debounceSignal<T>(initialValue: T, time: number, options?: CreateSignalOptions<T>): WritableSignal<T> {
-  const [getter] = createSignal<T>(initialValue, options?.equal);
-
-  const signalFn = getter as unknown as WritableSignal<T>;
-  const node = (getter as SignalGetter<T>)[SIGNAL];
-
-  let timeoutId: any;
-
-  signalFn.set = (newValue: T) => {
-    clearTimeout(timeoutId);
-    timeoutId = setTimeout(() => {
-      signalSetFn(node, newValue);
-    }, time);
-  };
-
-  signalFn.update = (updateFn: (value: T) => T) => {
-    clearTimeout(timeoutId);
-    timeoutId = setTimeout(() => {
-      signalUpdateFn(node, updateFn);
-    }, time);
-  };
-
-  return signalFn;
-}
 
 type UpdateChannel = '' | 'stable' | 'beta' | 'experimental' | 'canary';
 
@@ -93,6 +76,7 @@ type TimeTypes = (typeof TIME_OPTIONS)[number]['value'];
     ReactiveFormsModule,
     StatusBarComponent,
     RemoteControlComponent,
+    McpTokensComponent,
     AdvancedOptionsSettingsComponent,
     NotificationSettingsComponent,
     ShipButton,
@@ -122,7 +106,7 @@ export default class SettingsComponent {
   #relayConfigState = inject(RelayconfigState);
   #fileTreeState = inject(FileTreeState);
   #ls = inject(LOCALSTORAGE);
-  #initLang = this.#ls.getItem('locale') ?? 'en-US';
+  #initLang = mapLocale(this.#ls.getItem('locale'));
 
   sysinfo = this.#sysinfo.systemInfo;
   isDarkMode = this.#layoutState.isDarkMode;
@@ -140,6 +124,7 @@ export default class SettingsComponent {
   isUsingRelay = this.#relayConfigState.relayIsEnabled;
   defaultClient = signal(this.#getDefaultClient());
   hasIpcController = this.#sysinfo.hasIpcController;
+  hasFileWatcher = this.#sysinfo.hasFileWatcher;
   usageStatisticsDisabled = computed(() => {
     const value = this.#sysinfo.systemInfo()?.DefaultUsageReportLevel ?? '';
     return value.toLowerCase() === 'disabled';
@@ -279,6 +264,79 @@ export default class SettingsComponent {
       .subscribe();
   }
 
+  isFileWatcherDisabled = this.#serverSettingsService.isFileWatcherDisabled;
+  updatingFileWatcherState = signal(false);
+
+  saveFileWatcherState($event: boolean) {
+    this.updatingFileWatcherState.set(true);
+
+    this.#serverSettingsService
+      .setFileWatcherDisabled(!$event)
+      .pipe(finalize(() => this.updatingFileWatcherState.set(false)))
+      .subscribe({
+        // The service restores the previous settings and the HTTP interceptor reports the error.
+        error: () => {},
+      });
+  }
+
+  hasMcpServer = this.#sysinfo.hasMcpServer;
+  isMcpServerEnabled = this.#serverSettingsService.isMcpServerEnabled;
+  updatingMcpServerState = signal(false);
+  /** The list of access tokens, which is shown while the MCP server is on */
+  mcpTokens = viewChild(McpTokensComponent);
+  /** What the toggle shows while the user is asked to confirm; null when it shows the setting */
+  #mcpServerToggleOverride = signal<boolean | null>(null);
+  mcpServerToggleChecked = computed(() => this.#mcpServerToggleOverride() ?? this.isMcpServerEnabled());
+
+  saveMcpServerState($event: boolean) {
+    const enabled = !!$event;
+    const warning = enabled ? null : getMcpServerDisableWarning(this.#getMcpTokenCount());
+    if (warning === null) {
+      this.#setMcpServerState(enabled);
+      return;
+    }
+
+    // The toggle has already moved to off. Holding that value here lets a cancel move it back,
+    // as the setting itself does not change and so would not update the toggle.
+    this.#mcpServerToggleOverride.set(false);
+    this.#dialog.open(ConfirmDialogComponent, {
+      data: {
+        title: $localize`Turn off the MCP server`,
+        message: warning,
+        confirmText: $localize`Turn off and delete tokens`,
+        cancelText: $localize`Cancel`,
+      },
+      closed: (res) => {
+        if (res) this.#setMcpServerState(false);
+        else this.#mcpServerToggleOverride.set(null);
+      },
+    });
+  }
+
+  /** The number of access tokens, or null while the list has not been loaded */
+  #getMcpTokenCount(): number | null {
+    const mcpTokens = this.mcpTokens();
+    return mcpTokens && !mcpTokens.isLoading() ? mcpTokens.tokens().length : null;
+  }
+
+  #setMcpServerState(enabled: boolean) {
+    this.updatingMcpServerState.set(true);
+
+    this.#serverSettingsService
+      .setMcpServerEnabled(enabled)
+      .pipe(
+        finalize(() => {
+          this.updatingMcpServerState.set(false);
+          this.#mcpServerToggleOverride.set(null);
+        })
+      )
+      .subscribe({
+        // The service restores the previous settings and the HTTP interceptor reports the error.
+        error: () => {},
+      });
+  }
+
+  #auth = inject(AppAuthState);
   showPassphraseForm = signal(false);
   isUpdating = signal(false);
   passphrase = signal('');
@@ -301,6 +359,9 @@ export default class SettingsComponent {
           setTimeout(() => {
             this.passwordUpdated.set(false);
           }, 3000);
+
+          // The server has revoked all tokens, including the one this session uses
+          this.#auth.signOutAfterPassphraseChange();
         },
       });
   }
@@ -332,6 +393,17 @@ export default class SettingsComponent {
 
   usageStatisticsOptions = signal(USAGE_STATISTICS_OPTIONS);
 
+  serverTimezone = signal<string>(toServerTimezoneControlValue(''));
+  updatingServerTimezone = signal(false);
+  // Only servers reporting their time zones get the control: without the list there is nothing to pick from
+  hasServerTimezones = computed(() => this.#sysinfo.timeZones().length > 0);
+  serverTimezoneOptions = computed(() =>
+    toServerTimezoneOptions(
+      this.#sysinfo.timeZones(),
+      this.#serverSettingsService.serverSettings()?.[SERVER_TIMEZONE_KEY]
+    )
+  );
+
   timeTypeOptions = signal(TIME_OPTIONS);
   timeType = signal<TimeTypes>('none');
   timeValue = debounceSignal<number>(0, 300);
@@ -341,11 +413,35 @@ export default class SettingsComponent {
     return timeType === 'h' ? [1, 24] : [1, 60];
   });
 
-  updateLocale(newLocale: string) {
-    if (!newLocale || newLocale === '' || newLocale === this.previousLang) return;
+  // Bound to the select's selection event rather than the input's ngModelChange:
+  // the inline search types into the same input, so ngModelChange would fire
+  // with search text (which can coincide with a language code such as "da").
+  updateLocale(selected: unknown[]) {
+    const newLocale = (selected[0] as { value?: string } | undefined)?.value;
+    if (!newLocale || newLocale === this.previousLang) return;
+    if (!LANGUAGES.some((lang) => lang.value === newLocale)) return;
 
     this.#ls.setItem('locale', newLocale);
     window.location.reload();
+  }
+
+  // Bound to the selection event rather than ngModelChange, as the inline search types into the same input
+  updateServerTimezone(selected: unknown[]) {
+    const newValue = (selected[0] as { value?: string } | undefined)?.value;
+    if (!newValue || newValue === this.serverTimezone()) return;
+    if (this.updatingServerTimezone()) return;
+    if (!this.serverTimezoneOptions().some((option) => option.value === newValue)) return;
+
+    this.serverTimezone.set(newValue);
+    this.updatingServerTimezone.set(true);
+
+    this.#serverSettingsService
+      .setServerTimezone(toServerTimezoneSetting(newValue))
+      .pipe(finalize(() => this.updatingServerTimezone.set(false)))
+      .subscribe({
+        // The service restores the previous settings and the HTTP interceptor reports the error.
+        error: () => {},
+      });
   }
 
   updateTimeValue(newTimeValue: number) {
@@ -433,6 +529,7 @@ export default class SettingsComponent {
         ? 'default'
         : serverSettings['power-mode-provider'];
     this.powerModeCtrl.set(powerModeValue);
+    this.serverTimezone.set(toServerTimezoneControlValue(serverSettings[SERVER_TIMEZONE_KEY]));
   });
 
   setDarkMode() {

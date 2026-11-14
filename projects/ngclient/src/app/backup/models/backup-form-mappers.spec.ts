@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { BackupDto, SettingInputDto } from '../../core/openapi';
-import { mapBackupFormToDto, mapBackupFormToSettings, mapBackupToOptionsForm } from './backup-form-mappers';
-import { createGeneralForm } from './general-form';
+import {
+  mapBackupFormToDto,
+  mapBackupFormToSettings,
+  mapBackupToGeneralForm,
+  mapBackupToOptionsForm,
+} from './backup-form-mappers';
+import { createGeneralForm, NONE_OPTION } from './general-form';
 import { createSourceDataForm } from './source-data-form';
 import { SCHEDULE_FIELD_DEFAULTS } from './schedule-form';
 
@@ -17,8 +22,8 @@ describe('backup form model boundaries', () => {
     expect(secondSource.controls.path.value).toBe('');
     const firstSchedule = SCHEDULE_FIELD_DEFAULTS();
     const secondSchedule = SCHEDULE_FIELD_DEFAULTS();
-    firstSchedule.runAgain.allowedDays.mon.set(false);
-    expect(secondSchedule.runAgain.allowedDays.mon()).toBe(true);
+    firstSchedule.runAgain.allowedDays.mon = false;
+    expect(secondSchedule.runAgain.allowedDays.mon).toBe(true);
   });
 
   it('does not mutate supplied settings while adding the managed source size option', () => {
@@ -56,6 +61,9 @@ describe('backup form model boundaries', () => {
         backupRetentionTime: '',
         backupRetentionVersions: 0,
         backupRetentionCustom: '',
+        syncSnapshotFolders: false,
+        syncKeepSnapshots: 0,
+        syncSnapshotDisableHardlinks: false,
       },
       settings,
       false,
@@ -87,6 +95,9 @@ describe('backup form model boundaries', () => {
       backupRetention: 'versions',
       backupRetentionTime: '14D',
       backupRetentionVersions: 3,
+      syncSnapshotFolders: false,
+      syncKeepSnapshots: 0,
+      syncSnapshotDisableHardlinks: false,
     });
     expect(result.encryptionValues).toEqual(['aes', 'gpg']);
     expect(result.settings).toEqual([
@@ -97,5 +108,130 @@ describe('backup form model boundaries', () => {
     ]);
     expect(backup).toEqual(before);
     expect(global).toEqual({ '--retry-count': '99', '--global-option': 'enabled' });
+  });
+});
+
+describe('Sync snapshot options', () => {
+  const retention = {
+    backupRetention: 'versions' as const,
+    backupRetentionTime: '',
+    backupRetentionVersions: 3,
+    backupRetentionCustom: '',
+  };
+
+  it('saves snapshot folders and the number to keep for a Sync job, without backup retention', () => {
+    const saved = mapBackupFormToSettings(
+      { encryption: '-', operationType: 'Sync' },
+      { ...retention, syncSnapshotFolders: true, syncKeepSnapshots: 5, syncSnapshotDisableHardlinks: false },
+      [{ Name: '--sync-snapshot-folders', Value: 'False' }],
+      true
+    );
+    expect(saved).toContainEqual({ Name: '--sync-snapshot-folders', Value: 'True' });
+    expect(saved).toContainEqual({ Name: '--sync-keep-snapshots', Value: '5' });
+    expect(saved.some((x) => x.Name === '--sync-snapshot-disable-hardlinks')).toBe(false);
+    expect(saved.filter((x) => x.Name === '--sync-snapshot-folders')).toHaveLength(1);
+    expect(saved.some((x) => x.Name === 'keep-versions')).toBe(false);
+  });
+
+  it('saves the hard-link opt-out with the snapshot options', () => {
+    const saved = mapBackupFormToSettings(
+      { encryption: '-', operationType: 'Sync' },
+      { ...retention, syncSnapshotFolders: true, syncKeepSnapshots: 0, syncSnapshotDisableHardlinks: true },
+      [{ Name: '--sync-snapshot-disable-hardlinks', Value: 'False' }],
+      true
+    );
+    expect(saved.filter((x) => x.Name?.includes('sync-snapshot-disable-hardlinks'))).toEqual([
+      { Name: '--sync-snapshot-disable-hardlinks', Value: 'True' },
+    ]);
+  });
+
+  it('leaves the options out for a mirror and for a backup job', () => {
+    const mirror = mapBackupFormToSettings(
+      { encryption: '-', operationType: 'Sync' },
+      { ...retention, syncSnapshotFolders: false, syncKeepSnapshots: 5, syncSnapshotDisableHardlinks: true },
+      [],
+      true
+    );
+    const backup = mapBackupFormToSettings(
+      { encryption: '-', operationType: 'Backup' },
+      { ...retention, syncSnapshotFolders: true, syncKeepSnapshots: 5, syncSnapshotDisableHardlinks: true },
+      [],
+      false
+    );
+    for (const saved of [mirror, backup]) expect(saved.some((x) => x.Name?.includes('sync-'))).toBe(false);
+    expect(backup).toContainEqual({ Name: 'keep-versions', Value: '3' });
+  });
+
+  it('reads the options back into the form fields and keeps them out of the advanced list', () => {
+    const { settings, fields } = mapBackupToOptionsForm(
+      {
+        Settings: [
+          { Name: '--sync-snapshot-folders', Value: 'True' },
+          { Name: '--sync-keep-snapshots', Value: '7' },
+          { Name: 'sync-snapshot-disable-hardlinks', Value: 'true' },
+          { Name: '--retry-count', Value: '2' },
+        ],
+      } as BackupDto,
+      undefined
+    );
+    expect(fields.syncSnapshotFolders).toBe(true);
+    expect(fields.syncKeepSnapshots).toBe(7);
+    expect(fields.syncSnapshotDisableHardlinks).toBe(true);
+    expect(settings.map((x) => x.Name)).toEqual(['--retry-count']);
+  });
+});
+
+describe('Encryption of a backup without an encryption module', () => {
+  const backupWith = (settings: Array<[string, string]>) =>
+    ({
+      Name: 'Backup',
+      Description: '',
+      OperationType: 'Backup',
+      Settings: settings.map(([Name, Value]) => ({ Name, Value })),
+    }) as unknown as BackupDto;
+
+  // The editor creates the form with its defaults, patches it with the loaded backup, and maps it back on save
+  const saveUnchanged = (backup: BackupDto) => {
+    const general = createGeneralForm();
+    general.patchValue(mapBackupToGeneralForm(backup));
+    return mapBackupFormToSettings(
+      general.value,
+      {
+        backupRetention: 'all',
+        backupRetentionTime: '',
+        backupRetentionVersions: 0,
+        backupRetentionCustom: '',
+        syncSnapshotFolders: false,
+        syncKeepSnapshots: 0,
+        syncSnapshotDisableHardlinks: false,
+      },
+      [],
+      false
+    );
+  };
+
+  it('reads a passphrase without an encryption module as the default module', () => {
+    // The server encrypts with aes when a backup has a passphrase and no encryption-module
+    expect(mapBackupToGeneralForm(backupWith([['passphrase', 'secret']])).encryption).toBe('aes');
+  });
+
+  it('keeps such a backup encrypted when it is saved unchanged', () => {
+    const settings = saveUnchanged(backupWith([['passphrase', 'secret']]));
+
+    expect(settings).toContainEqual({ Name: 'encryption-module', Value: 'aes' });
+    expect(settings).toContainEqual({ Name: 'passphrase', Value: 'secret' });
+    expect(settings.find((x) => x.Name === '--no-encryption')).toBeUndefined();
+  });
+
+  it('keeps a backup without encryption unencrypted', () => {
+    expect(
+      mapBackupToGeneralForm(
+        backupWith([
+          ['--no-encryption', 'true'],
+          ['passphrase', 'secret'],
+        ])
+      ).encryption
+    ).toBe(NONE_OPTION.Key);
+    expect(mapBackupToGeneralForm(backupWith([])).encryption).toBeUndefined();
   });
 });

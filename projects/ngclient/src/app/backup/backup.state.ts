@@ -1,5 +1,6 @@
 import { computed, DestroyRef, effect, inject, Injectable, signal, untracked } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
+import { form, min } from '@angular/forms/signals';
 import { Router } from '@angular/router';
 import { ShipDialogService } from '@ship-ui/core/ship-dialog';
 import {
@@ -29,13 +30,12 @@ import {
 } from '../core/openapi';
 import { TimespanLiteralsService } from '../core/services/timespan-literals.service';
 import { AsyncOperation } from '../core/signals/async-operation';
-import { parseRecursiveObjectOfSignals } from '../core/signals/parse-recursive-signals-object';
 import { ConnectionStringsState } from '../core/states/connection-strings.state';
 import { SysinfoState } from '../core/states/sysinfo.state';
 import { ServerSettingsService } from '../settings/server-settings.service';
 import { FormView, getConfigurationByUrl } from './destination/destination.config-utilities';
 import { createGeneralForm, NONE_OPTION } from './models/general-form';
-import { RetentionType } from './models/backup-options';
+import { BackupOptionsFormValue } from './models/backup-options';
 import {
   BackupTargetUrl,
   mapBackupToGeneralForm,
@@ -43,6 +43,7 @@ import {
   mapBackupToOptionsForm,
   mapBackupFormToSettings,
   mapBackupFormToDto,
+  secondaryDestinationError,
 } from './models/backup-form-mappers';
 import {
   getNextRunDate,
@@ -91,15 +92,22 @@ export class BackupState {
 
   generalForm = createGeneralForm();
   sourceDataForm = createSourceDataForm();
-  scheduleFields = SCHEDULE_FIELD_DEFAULTS();
+  readonly scheduleModel = signal(SCHEDULE_FIELD_DEFAULTS());
+  readonly scheduleForm = form(this.scheduleModel);
   scheduleType = signal<string>('daily');
   settings = signal<SettingInputDto[]>([]);
-  optionsFields = {
-    backupRetention: signal<RetentionType>('all'),
-    backupRetentionTime: signal(''),
-    backupRetentionVersions: signal<number | null>(0),
-    backupRetentionCustom: signal(''),
-  };
+  readonly optionsModel = signal<BackupOptionsFormValue>({
+    backupRetention: 'all',
+    backupRetentionTime: '',
+    backupRetentionVersions: 0,
+    backupRetentionCustom: '',
+    syncSnapshotFolders: false,
+    syncKeepSnapshots: 0,
+    syncSnapshotDisableHardlinks: false,
+  });
+  readonly optionsForm = form(this.optionsModel, (path) => {
+    min(path.syncKeepSnapshots, 0);
+  });
 
   targetUrls = signal<BackupTargetUrl[]>([]);
   targetUrlModel = computed(() => this.targetUrls()[0]?.url ?? null);
@@ -109,7 +117,7 @@ export class BackupState {
   backupMetadata = signal<Record<string, string> | null>(null);
 
   isDraft = signal(false);
-  backupId = signal<'new' | 'string' | null>(null);
+  backupId = signal<string | null>(null);
   backupName = computed(() => this.generalFormSignal()?.name ?? '');
   #saveOperation = new AsyncOperation<unknown>();
   #saveContext: BackupSaveContext | null = null;
@@ -225,7 +233,10 @@ export class BackupState {
           target.url === saved.url &&
           target.connectionStringId === saved.connectionStringId &&
           target.urlKey === saved.urlKey &&
-          target.save === saved.save
+          target.save === saved.save &&
+          target.mode === saved.mode &&
+          target.interval === saved.interval &&
+          target.options === saved.options
         );
       })
     );
@@ -237,6 +248,10 @@ export class BackupState {
   }
 
   submit(withoutExit = false) {
+    if (this.targetUrls().slice(1).some(secondaryDestinationError)) {
+      this.validateBeforeSubmit();
+      return;
+    }
     this.#saveOperation.run(
       () => {
         // Capture what was submitted before any connection-string requests finish.
@@ -258,6 +273,9 @@ export class BackupState {
               TargetUrl: target.url,
               ConnectionStringID: csIds[index + 1] ?? undefined,
               UrlKey: target.urlKey,
+              ...(target.mode !== undefined ? { Mode: target.mode } : {}),
+              ...(target.interval !== undefined ? { Interval: target.interval } : {}),
+              ...(target.options !== undefined ? { Options: target.options } : {}),
             }));
             if (additional.length) backup.Backup.AdditionalTargetURLs = additional;
 
@@ -340,6 +358,17 @@ export class BackupState {
       return 'destination';
     }
 
+    if (targetUrls.slice(1).some(secondaryDestinationError)) {
+      this.#dialog.open(ConfirmDialogComponent, {
+        data: {
+          title: $localize`Invalid synchronization settings`,
+          message: $localize`Enter a positive synchronization interval or a positive whole number of backups for each secondary destination.`,
+          confirmText: $localize`OK`,
+        },
+      });
+      return 'destination';
+    }
+
     var isSourceValid = (backup.Backup.Sources ?? []).filter((x) => x.trim() !== '').length > 0;
     if (!isSourceValid || !this.sourceDataForm.valid) {
       this.#dialog.open(ConfirmDialogComponent, {
@@ -394,9 +423,12 @@ export class BackupState {
     const firstDestination = url ? [createBackupTargetUrl(url, csId, null, !!csId)] : [];
 
     const additionalDestinations =
-      (anyBackup.AdditionalTargetURLs as TargetUrlDto[])?.map((t) =>
-        createBackupTargetUrl(t.TargetUrl!, t.ConnectionStringID ?? null, t.UrlKey ?? null, !!t.ConnectionStringID)
-      ) ?? [];
+      (anyBackup.AdditionalTargetURLs as TargetUrlDto[])?.map((t) => ({
+        ...createBackupTargetUrl(t.TargetUrl!, t.ConnectionStringID ?? null, t.UrlKey ?? null, !!t.ConnectionStringID),
+        mode: t.Mode,
+        interval: t.Interval,
+        options: t.Options ? { ...t.Options } : t.Options,
+      })) ?? [];
 
     this.targetUrls.set([...firstDestination, ...additionalDestinations]);
   }
@@ -408,7 +440,7 @@ export class BackupState {
   mapScheduleToForm(schedule: ScheduleDto | null) {
     if (!schedule) {
       this.scheduleType.set('disabled');
-      this.scheduleFields.autoRun.set(false);
+      this.scheduleForm.autoRun().value.set(false);
 
       return;
     }
@@ -416,25 +448,25 @@ export class BackupState {
     const res = this.#timespanLiteralService.fromString(schedule.Repeat) ?? null;
     const nextTime = evaluateTimeString(schedule.Time);
 
-    this.scheduleFields.autoRun.set(true);
+    this.scheduleForm.autoRun().value.set(true);
 
     // A time without a date (the server's new backup default) starts at its next occurrence
-    this.scheduleFields.nextTime.date.set(nextTime.date ?? getNextRunDate(nextTime.time));
-    this.scheduleFields.nextTime.time.set(nextTime.time);
-    this.scheduleFields.runAgain.repeatUnit.set(res?.unit ?? 'D');
-    this.scheduleFields.runAgain.repeatValue.set(res?.value ?? 1);
-    this.scheduleFields.runAgain.allowedDays.mon.set(schedule.AllowedDays?.includes('mon') ?? false);
-    this.scheduleFields.runAgain.allowedDays.tue.set(schedule.AllowedDays?.includes('tue') ?? false);
-    this.scheduleFields.runAgain.allowedDays.wed.set(schedule.AllowedDays?.includes('wed') ?? false);
-    this.scheduleFields.runAgain.allowedDays.thu.set(schedule.AllowedDays?.includes('thu') ?? false);
-    this.scheduleFields.runAgain.allowedDays.fri.set(schedule.AllowedDays?.includes('fri') ?? false);
-    this.scheduleFields.runAgain.allowedDays.sat.set(schedule.AllowedDays?.includes('sat') ?? false);
-    this.scheduleFields.runAgain.allowedDays.sun.set(schedule.AllowedDays?.includes('sun') ?? false);
+    this.scheduleForm.nextTime.date().value.set(nextTime.date ?? getNextRunDate(nextTime.time));
+    this.scheduleForm.nextTime.time().value.set(nextTime.time);
+    this.scheduleForm.runAgain.repeatUnit().value.set(res?.unit ?? 'D');
+    this.scheduleForm.runAgain.repeatValue().value.set(res?.value ?? 1);
+    this.scheduleForm.runAgain.allowedDays.mon().value.set(schedule.AllowedDays?.includes('mon') ?? false);
+    this.scheduleForm.runAgain.allowedDays.tue().value.set(schedule.AllowedDays?.includes('tue') ?? false);
+    this.scheduleForm.runAgain.allowedDays.wed().value.set(schedule.AllowedDays?.includes('wed') ?? false);
+    this.scheduleForm.runAgain.allowedDays.thu().value.set(schedule.AllowedDays?.includes('thu') ?? false);
+    this.scheduleForm.runAgain.allowedDays.fri().value.set(schedule.AllowedDays?.includes('fri') ?? false);
+    this.scheduleForm.runAgain.allowedDays.sat().value.set(schedule.AllowedDays?.includes('sat') ?? false);
+    this.scheduleForm.runAgain.allowedDays.sun().value.set(schedule.AllowedDays?.includes('sun') ?? false);
 
     // The date is only the first run and depends on when the form was filled, so leave it out of the match
     const withoutDate = (x: { nextTime: object }) =>
       JSON.stringify({ ...x, nextTime: { ...x.nextTime, date: undefined } });
-    const test = parseRecursiveObjectOfSignals(this.scheduleFields);
+    const test = this.scheduleModel();
     const matchPredefined = SCHEDULE_DEFAULT_OPTIONS.find((x) => withoutDate(x.data) === withoutDate(test));
 
     if (matchPredefined) {
@@ -455,12 +487,15 @@ export class BackupState {
     result.encryptionValues.forEach((value) => this.generalForm.controls.encryption.setValue(value));
     const fields = result.fields;
     if (fields.backupRetentionTime !== undefined)
-      this.optionsFields.backupRetentionTime.set(fields.backupRetentionTime);
+      this.optionsForm.backupRetentionTime().value.set(fields.backupRetentionTime);
     if (fields.backupRetentionVersions !== undefined)
-      this.optionsFields.backupRetentionVersions.set(fields.backupRetentionVersions);
+      this.optionsForm.backupRetentionVersions().value.set(fields.backupRetentionVersions);
     if (fields.backupRetentionCustom !== undefined)
-      this.optionsFields.backupRetentionCustom.set(fields.backupRetentionCustom);
-    this.optionsFields.backupRetention.set(fields.backupRetention);
+      this.optionsForm.backupRetentionCustom().value.set(fields.backupRetentionCustom);
+    this.optionsForm.backupRetention().value.set(fields.backupRetention);
+    this.optionsForm.syncSnapshotFolders().value.set(fields.syncSnapshotFolders ?? false);
+    this.optionsForm.syncKeepSnapshots().value.set(fields.syncKeepSnapshots ?? 0);
+    this.optionsForm.syncSnapshotDisableHardlinks().value.set(fields.syncSnapshotDisableHardlinks ?? false);
   }
 
   storeMetadata(backup: BackupDto, isDraft: boolean) {
@@ -468,7 +503,7 @@ export class BackupState {
   }
 
   getScheduleFormValue() {
-    const schedule = parseRecursiveObjectOfSignals(this.scheduleFields);
+    const schedule = this.scheduleModel();
     const parsedSchedule = scheduleOptionToSchedule(schedule);
 
     return parsedSchedule;
@@ -487,12 +522,7 @@ export class BackupState {
   mapFormsToSettings(settingsIgnoreList: string[] = []) {
     return mapBackupFormToSettings(
       this.generalForm.value,
-      {
-        backupRetention: this.optionsFields.backupRetention(),
-        backupRetentionTime: this.optionsFields.backupRetentionTime(),
-        backupRetentionVersions: this.optionsFields.backupRetentionVersions(),
-        backupRetentionCustom: this.optionsFields.backupRetentionCustom(),
-      },
+      this.optionsModel(),
       this.settings(),
       this.isSyncMode(),
       settingsIgnoreList
@@ -614,6 +644,11 @@ export class BackupState {
     });
   }
 
+  updateTargetSynchronization(index: number, changes: Pick<BackupTargetUrl, 'mode' | 'interval' | 'options'>) {
+    if (index < 1 || index >= this.targetUrls().length) return;
+    this.targetUrls.update((targets) => targets.map((target, i) => (i === index ? { ...target, ...changes } : target)));
+  }
+
   removeTargetUrl(index: number) {
     this.targetUrls.update((urls) => urls.filter((_, i) => i !== index));
   }
@@ -621,9 +656,12 @@ export class BackupState {
   #resetAllForms() {
     this.generalForm.reset({ operationType: 'Backup' });
     this.sourceDataForm.reset();
-    this.scheduleFields = SCHEDULE_FIELD_DEFAULTS();
-    // this.optionsFields.remoteVolumeSize.set('50MB');
-    this.optionsFields.backupRetention.set('all');
+    this.scheduleForm().reset(SCHEDULE_FIELD_DEFAULTS());
+    // this.optionsForm.remoteVolumeSize.set('50MB');
+    this.optionsForm.backupRetention().value.set('all');
+    this.optionsForm.syncSnapshotFolders().value.set(false);
+    this.optionsForm.syncKeepSnapshots().value.set(0);
+    this.optionsForm.syncSnapshotDisableHardlinks().value.set(false);
     this.settings.set([]);
     this.targetUrls.set([]);
   }

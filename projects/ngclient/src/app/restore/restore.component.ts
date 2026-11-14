@@ -1,5 +1,6 @@
+import { KeyboardActionDirective } from '../core/directives/keyboard-action.directive';
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
-import { FormsModule } from '@angular/forms';
+import { form, FormField } from '@angular/forms/signals';
 import { RouterLink } from '@angular/router';
 import { ShipButton } from '@ship-ui/core/ship-button';
 import { ShipCard } from '@ship-ui/core/ship-card';
@@ -11,11 +12,13 @@ import { defer } from 'rxjs';
 import StatusBarComponent from '../core/components/status-bar/status-bar.component';
 import { BackupAndScheduleOutputDto, DuplicatiServer } from '../core/openapi';
 import { BackupsState } from '../core/states/backups.state';
+import { SysinfoState } from '../core/states/sysinfo.state';
 
 @Component({
   selector: 'app-restore',
   imports: [
-    FormsModule,
+    KeyboardActionDirective,
+    FormField,
     StatusBarComponent,
     ShipCard,
     ShipButton,
@@ -33,9 +36,17 @@ export default class RestoreComponent {
   #backupsState = inject(BackupsState);
   #dupServer = inject(DuplicatiServer);
 
-  backups = computed(() => this.#backupsState.backups().filter((job) => job.Backup?.OperationType !== 'Sync'));
+  #hasSyncRestore = inject(SysinfoState).hasSyncRestore;
+
+  // Servers that cannot restore a Sync job do not offer it
+  backups = computed(() =>
+    this.#hasSyncRestore()
+      ? this.#backupsState.backups()
+      : this.#backupsState.backups().filter((job) => job.Backup?.OperationType !== 'Sync')
+  );
   backupsLoading = this.#backupsState.backupsLoading;
-  searchTerm = signal('');
+  searchForm = form(signal({ query: '' }));
+  searchTerm = this.searchForm.query().value;
   showSearch = computed(() => this.backups().length > 3);
   filteredBackups = computed(() => {
     const backups = this.backups();

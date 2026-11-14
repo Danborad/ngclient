@@ -1,5 +1,14 @@
 import { DatePipe, JsonPipe, NgTemplateOutlet } from '@angular/common';
-import { ChangeDetectionStrategy, Component, computed, inject, input, resource, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  computed,
+  inject,
+  input,
+  linkedSignal,
+  resource,
+  signal,
+} from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { ShipButton } from '@ship-ui/core/ship-button';
 import { ShipDivider } from '@ship-ui/core/ship-divider';
@@ -27,6 +36,27 @@ export const LOG_LEVEL_DISPLAY: Record<LogLevel, { icon: string; label: string }
   unknown: { icon: 'dots-three-circle', label: $localize`Unknown level` },
 };
 
+/** Human readable names for the restore test enums, keyed by the value the server serializes */
+const RESTORE_TEST_MODE_LABELS: Record<string, string> = {
+  RandomFiles: $localize`Random files`,
+  RandomSize: $localize`Random files up to a size`,
+  Full: $localize`All files`,
+  Rolling: $localize`Rolling, least recently verified first`,
+};
+
+const RESTORE_TEST_FAILURE_LABELS: Record<string, string> = {
+  HashMismatch: $localize`Content hash mismatch`,
+  SizeMismatch: $localize`Size mismatch`,
+  MissingRemoteVolume: $localize`Remote volume missing or damaged`,
+  RestoreError: $localize`Restore failed`,
+  MetadataMismatch: $localize`Metadata mismatch`,
+};
+
+const RESTORE_TEST_BUDGET_LABELS: Record<string, string> = {
+  DownloadSize: $localize`download size budget exceeded`,
+  Runtime: $localize`runtime budget exceeded`,
+};
+
 type ParsedLogLines = {
   messages: ParsedLogLine[];
   warnings: ParsedLogLine[];
@@ -51,8 +81,14 @@ type LogEntryEvaluated = {
   data?: BackupResult & Partial<SyncResult>;
   rawMessage?: string;
   exception: unknown;
-  // The Warnings and Errors of data, and of each secondary destination, split into time, level, tag and message
-  logLines?: ParsedLogLines & { sync: ParsedLogLines[] };
+  // The Warnings and Errors of data, of the restore test and of each secondary destination, split into time, level, tag and message
+  logLines?: ParsedLogLines & { sync: ParsedLogLines[]; restoreTest?: ParsedLogLines };
+};
+
+type LogPagination = {
+  offset: number | undefined;
+  pagesize: number;
+  previousOffsets: Array<number | undefined>;
 };
 
 function parseLogLines(result: { Messages?: string[] | null; Warnings?: string[] | null; Errors?: string[] | null }) {
@@ -89,8 +125,12 @@ export class GeneralLogComponent {
   #durationPipe = new DurationFormatPipe();
 
   backupId = input.required<string>();
+  pagination = linkedSignal({
+    source: this.backupId,
+    computation: (): LogPagination => ({ offset: undefined, pagesize: 100, previousOffsets: [] }),
+  });
   isSuppressingWarning = signal(false);
-  copied = signal<string | null>(null);
+  copied = linkedSignal({ source: this.pagination, computation: (): string | null => null });
 
   // Resource to fetch backup data for checking suppressed warnings
   backupResource = resource({
@@ -113,19 +153,23 @@ export class GeneralLogComponent {
     );
   });
 
-  openEntry = signal<number | null>(null);
+  openEntry = linkedSignal({ source: this.pagination, computation: (): number | null => null });
   // Keys of the log line rows the user has expanded, cleared when another entry is opened
-  expandedLogLines = signal<ReadonlySet<string>>(new Set());
-  openSection = signal<'errors' | 'warnings' | null>(null);
-  pagination = signal({
-    offset: 0,
-    pagesize: 100,
+  expandedLogLines = linkedSignal({
+    source: this.pagination,
+    computation: (): ReadonlySet<string> => new Set(),
   });
+  openSection = linkedSignal({ source: this.pagination, computation: (): 'errors' | 'warnings' | null => null });
 
   resource = rxResource({
-    params: () => ({ id: this.backupId()!, ...this.pagination() }),
+    params: () => ({ id: this.backupId(), offset: this.pagination().offset, pagesize: this.pagination().pagesize }),
     stream: ({ params }) =>
-      defer(() => this.#dupServer.getApiV1BackupByIdLog({ path: { id: params.id }, query: { pagesize: 100 } })).pipe(
+      defer(() =>
+        this.#dupServer.getApiV1BackupByIdLog({
+          path: { id: params.id },
+          query: { offset: params.offset, pagesize: params.pagesize },
+        })
+      ).pipe(
         map((x) => {
           return (x as LogEntry[]).map((y): LogEntryEvaluated => {
             let data: LogEntryEvaluated['data'] | undefined;
@@ -146,6 +190,7 @@ export class GeneralLogComponent {
               logLines: data && {
                 ...parseLogLines(data),
                 sync: (data.RemoteSynchronizationResults ?? []).map(parseLogLines),
+                restoreTest: data.RestoreTestResults ? parseLogLines(data.RestoreTestResults) : undefined,
               },
               rawMessage: data === undefined ? y.Message : undefined,
               exception: JSON.stringify(y.Exception) === '{}' ? null : y.Exception,
@@ -154,6 +199,38 @@ export class GeneralLogComponent {
         })
       ),
   });
+
+  // The API's offset is an exclusive ID cursor, not a row count or timestamp.
+  #olderOffset = computed(() => {
+    if (!this.resource.hasValue()) return undefined;
+    const entries = this.resource.value();
+    const page = this.pagination();
+    const offset = entries.at(-1)?.id;
+    if (entries.length < page.pagesize || offset === undefined || offset <= 0) return undefined;
+    if (page.offset !== undefined && offset >= page.offset) return undefined;
+    return offset;
+  });
+  hasOlderEntries = computed(() => !this.resource.isLoading() && this.#olderOffset() !== undefined);
+  hasNewerEntries = computed(() => !this.resource.isLoading() && this.pagination().previousOffsets.length > 0);
+
+  loadOlder() {
+    const offset = this.#olderOffset();
+    if (this.resource.isLoading() || offset === undefined) return;
+    this.pagination.update((page) => ({
+      ...page,
+      offset,
+      previousOffsets: [...page.previousOffsets, page.offset],
+    }));
+  }
+
+  loadNewer() {
+    if (!this.hasNewerEntries()) return;
+    this.pagination.update((page) => ({
+      ...page,
+      offset: page.previousOffsets.at(-1),
+      previousOffsets: page.previousOffsets.slice(0, -1),
+    }));
+  }
 
   getLocalizedSummary(item: LogEntryEvaluated): string {
     const errorCount = item.data?.ErrorsActualLength ?? 0;
@@ -193,6 +270,18 @@ export class GeneralLogComponent {
     if (durationString.startsWith('0h ')) durationString = durationString.slice(3);
     if (durationString.startsWith('0m ')) durationString = durationString.slice(3);
     return durationString;
+  }
+
+  restoreTestModeLabel(mode: string | undefined): string {
+    return (mode && RESTORE_TEST_MODE_LABELS[mode]) || mode || '';
+  }
+
+  restoreTestFailureLabel(reason: string | undefined): string {
+    return (reason && RESTORE_TEST_FAILURE_LABELS[reason]) || reason || '';
+  }
+
+  restoreTestBudgetLabel(reason: string | undefined): string {
+    return (reason && RESTORE_TEST_BUDGET_LABELS[reason]) || reason || '';
   }
 
   getStatusClass(item: LogEntryEvaluated): string {

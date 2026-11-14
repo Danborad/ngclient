@@ -63,7 +63,12 @@ describe('ServerStatusWebSocketService lifecycle', () => {
 
   const setup = (modernAuth = false) => {
     const refresh = new Subject<AccessTokenOutputDto>();
-    const auth = { token: signal('token'), xsrfQueryParam: signal(null), refreshToken: vi.fn(() => refresh) };
+    const auth = {
+      token: signal('token'),
+      xsrfQueryParam: signal(null),
+      isLoggingOut: signal(false),
+      refreshToken: vi.fn(() => refresh),
+    };
     const dialogRef = { close: vi.fn(), component: { reconnectTimer: signal(0) } };
     const dialog = { open: vi.fn(() => dialogRef) };
     TestBed.configureTestingModule({
@@ -212,5 +217,55 @@ describe('ServerStatusWebSocketService lifecycle', () => {
     expect(FakeWebSocket.instances).toHaveLength(1);
     vi.advanceTimersByTime(1);
     expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it('does not show the reconnect dialog when a failed 4401 refresh signs the session out', () => {
+    const { socket, refresh, dialog, auth } = setup(true);
+    socket.disconnect(4401);
+    // The interceptor starts the logout before the refresh error reaches the websocket service
+    auth.isLoggingOut.set(true);
+    refresh.error(new Error('Unauthorized'));
+    expect(dialog.open).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(5000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+  it.each([false, true])('retries after an auth-reply refresh fails (socket already closed: %s)', (closed) => {
+    const { socket, refresh, auth, dialog, dialogRef } = setup(true);
+    socket.message({ Success: false, Message: 'Expired' });
+    if (closed) socket.disconnect();
+    refresh.error(new Error('Temporarily offline'));
+    expect(dialog.open).toHaveBeenCalledTimes(1);
+    expect(dialogRef.component.reconnectTimer()).toBe(5000);
+    vi.advanceTimersByTime(4999);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    const retried = FakeWebSocket.instances[1];
+    expect(retried).toBeDefined();
+    retried.open();
+    const recovered = new Subject<AccessTokenOutputDto>();
+    auth.refreshToken.mockReturnValue(recovered);
+    retried.message({ Success: false, Message: 'Expired' });
+    auth.token.set('fresh-token');
+    recovered.next({ AccessToken: 'fresh-token' });
+    recovered.complete();
+    const connected = FakeWebSocket.instances[2];
+    connected.open();
+    connected.message({ Success: true });
+    expect(connected.send).toHaveBeenCalledWith(expect.stringContaining('fresh-token'));
+    expect(service.connectionStatus()).toBe('connected');
+    vi.advanceTimersByTime(10000);
+    expect(FakeWebSocket.instances).toHaveLength(3);
+    expect(dialogRef.close).toHaveBeenCalled();
+  });
+
+  it('does not schedule an auth-reply retry after a failed refresh signs out', () => {
+    const { socket, refresh, auth, dialog } = setup(true);
+    socket.message({ Success: false, Message: 'Expired' });
+    socket.disconnect();
+    auth.isLoggingOut.set(true);
+    refresh.error(new Error('Unauthorized'));
+    vi.advanceTimersByTime(10000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(dialog.open).not.toHaveBeenCalled();
   });
 });

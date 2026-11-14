@@ -1,4 +1,4 @@
-import { NgTemplateOutlet } from '@angular/common';
+import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import {
   afterNextRender,
   ChangeDetectionStrategy,
@@ -16,6 +16,7 @@ import {
 import { rxResource } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
 import { ShipAlert } from '@ship-ui/core/ship-alert';
+import { ShipTooltip } from '@ship-ui/core/ship-tooltip';
 import { ShipButton } from '@ship-ui/core/ship-button';
 import { ShipButtonGroup } from '@ship-ui/core/ship-button-group';
 import { ShipDialog, ShipDialogService } from '@ship-ui/core/ship-dialog';
@@ -39,32 +40,26 @@ import { BytesPipe } from '../../pipes/byte.pipe';
 import { FileTreeState } from '../../states/file-tree.state';
 import { SysinfoState } from '../../states/sysinfo.state';
 import { ConfirmDialogComponent } from '../confirm-dialog/confirm-dialog.component';
-import { globMatchesPath, regexMatchesPath } from './file-tree-filter-matcher';
-import { BackupSettings, RemoteSource, PagedListResult, FileTreeListingService } from './file-tree-listing.service';
+import { evaluateFileTreeFilters } from './file-tree-filter-matcher';
+import { isFolderPath } from './file-tree-path-utils';
+import { findIncludePickContaining, findIncludePicks, toggleInIncludePick } from './include-pick';
+import { BackupSettings, PagedListResult, FileTreeListingService } from './file-tree-listing.service';
 export type { BackupSettings } from './file-tree-listing.service';
 
-export enum TreeEvalEnum {
-  ExcludedByParent = -2,
-  Excluded = -1,
-  None = 0,
-  Included = 1,
-  IncludedByParent = 2,
-}
+import { buildSearchResultTree, sortFileTreeNodes } from './file-tree.presentation';
+import {
+  FileTreeNode,
+  getInheritedExclusionState,
+  RemoteSource,
+  ROOTPATH,
+  TreeEvalEnum,
+  TreeNode,
+} from './file-tree.models';
 
-export const getInheritedExclusionState = (
-  parentState: TreeEvalEnum | null | undefined
-): TreeEvalEnum.ExcludedByParent | null => {
-  if (parentState === TreeEvalEnum.Excluded || parentState === TreeEvalEnum.ExcludedByParent) {
-    return TreeEvalEnum.ExcludedByParent;
-  }
+// Keep existing consumers compatible while the shared model lives outside the component.
+export { getInheritedExclusionState, TreeEvalEnum } from './file-tree.models';
 
-  return null;
-};
-
-export const isFolderPath = (path: string): boolean =>
-  (path.startsWith('%') && path.endsWith('%') && !path.includes('/') && !path.includes('\\')) ||
-  path.endsWith('/') ||
-  path.endsWith('\\');
+export { isFolderPath };
 
 // Filters only ever apply to paths that the backup enumerates, i.e. the selected
 // sources and everything below a selected source folder. A node outside every
@@ -81,23 +76,19 @@ export const isPathWithinSources = (
       (isFolderPath(source) && (nodeId.startsWith(source) || (resolvedNodeId?.startsWith(source) ?? false)))
   );
 
-type TreeNode = TreeNodeDto & {
-  accepted?: boolean;
-  parentPath: string;
-  isLoadMore?: boolean;
-  loadMoreOffset?: number | null;
+type TreeNodeBadge = {
+  icon: string;
+  label: string;
+  announce?: boolean;
+  /** Show the icon in place of the folder/file icon instead of as a corner badge. */
+  replacesIcon?: boolean;
 };
 
-type FileTreeNode = TreeNode & {
-  children: FileTreeNode[];
-  evalState: TreeEvalEnum;
-  isIndeterminate: boolean;
-  isSearchMatch?: boolean;
-  isGenerated?: boolean;
-  hasChildrenInSearch?: boolean;
-  customIcon?: string;
-  remoteSource?: RemoteSource;
-};
+/**
+ * Icon names chosen in code are invisible to the ship-fg font subsetter, which only scans
+ * templates and string literals carrying the shicon prefix; the prefix makes it include the glyph.
+ */
+const shIcon = (marked: `shicon:${string}`) => marked.slice('shicon:'.length);
 
 type InputValueChangedEvent = CustomEvent<{ value: string }>;
 
@@ -122,9 +113,6 @@ declare global {
   }
 }
 
-// The virtual root path for the file tree, also used for Windows as the root path.
-const ROOTPATH = '/';
-
 // Suffix used to build the id of the synthetic "load more" pagination node.
 // The \0 character cannot appear in real filesystem paths, so it never collides with a real node.
 const LOAD_MORE_ID_SUFFIX = '\0load-more';
@@ -143,19 +131,25 @@ const LOAD_MORE_ID_SUFFIX = '\0load-more';
     NgTemplateOutlet,
     FormsModule,
     BytesPipe,
+    DatePipe,
     ShipAlert,
+    ShipTooltip,
   ],
+  providers: [DatePipe],
   templateUrl: './file-tree.component.html',
   styleUrl: './file-tree.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     '[class.disabled]': 'disabled()',
+    '[class.maximized]': 'maximized()',
+    '(document:keydown.escape)': 'onDocumentEscape($event)',
   },
 })
 export default class FileTreeComponent {
   #dupServer = inject(DuplicatiServer);
   #listing = inject(FileTreeListingService);
   #sysInfo = inject(SysinfoState);
+  #datePipe = inject(DatePipe);
   #dialog = inject(ShipDialogService);
   #fileTreeState = inject(FileTreeState);
   #injector = inject(Injector);
@@ -179,6 +173,12 @@ export default class FileTreeComponent {
   resolvePaths = input(false);
   customRemoteMode = input<'gsuite' | 'o365' | 'diskimage' | 'backend' | null>(null);
   showUnrootedSources = input(false);
+  // Offers "choose what to include" on folder rows, and toggles entries inside a picked folder as picks
+  enableIncludePicker = input(false);
+  includePick = output<string>();
+  // A remote source as @mount|url whose mount is the first root path, so the root lists through it
+  rootRemoteSource = input<string | null>(null);
+  #rootRemoteSource = computed(() => this.#parseRemotePath(this.rootRemoteSource()));
   backupId = input<string | null | undefined>('');
   connectionStringId = input<number | null | undefined>(null);
   sourcePrefix = input<string | null | undefined>('');
@@ -193,6 +193,45 @@ export default class FileTreeComponent {
   searchParentMetadata = input<{ [path: string]: { [key: string]: string | null } | null | undefined }>({});
 
   _showHiddenNodes = signal(false);
+  maximized = signal(false);
+  maximizeLabels = {
+    maximize: $localize`Maximize file tree`,
+    restore: $localize`Restore file tree size`,
+  };
+  /**
+   * Corner badges layered over the folder/file icon, keyed by the node `kind` sent by the
+   * server (exact match first, then the part before the colon). `announce` adds the label
+   * to the row's accessible name, for states the visible name does not already convey.
+   */
+  readonly #treeNodeBadges: Record<string, TreeNodeBadge> = {
+    symlink: { icon: shIcon('shicon:arrow-bend-up-right'), label: $localize`Symbolic link`, announce: true },
+    locked: { icon: shIcon('shicon:lock'), label: $localize`Access denied`, announce: true },
+    drive: { icon: shIcon('shicon:hard-drive'), label: $localize`Drive` },
+    'drive:network': { icon: shIcon('shicon:globe-simple'), label: $localize`Network drive` },
+    'drive:removable': { icon: shIcon('shicon:usb'), label: $localize`Removable drive` },
+    special: { icon: shIcon('shicon:star'), label: $localize`Special folder` },
+    'special:home': { icon: shIcon('shicon:user'), label: $localize`Home folder` },
+    'special:my_documents': { icon: shIcon('shicon:file-text'), label: $localize`Documents folder` },
+    'special:my_music': { icon: shIcon('shicon:music-note'), label: $localize`Music folder` },
+    'special:my_pictures': { icon: shIcon('shicon:image'), label: $localize`Pictures folder` },
+    'special:my_videos': { icon: shIcon('shicon:film-strip'), label: $localize`Videos folder` },
+    'special:my_movies': { icon: shIcon('shicon:film-strip'), label: $localize`Movies folder` },
+    'special:desktop': { icon: shIcon('shicon:desktop'), label: $localize`Desktop folder` },
+    'special:appdata': { icon: shIcon('shicon:gear'), label: $localize`Application data folder` },
+    'special:my_downloads': { icon: shIcon('shicon:download-simple'), label: $localize`Downloads folder` },
+    'special:my_public': { icon: shIcon('shicon:users-three'), label: $localize`Public folder` },
+    'qnap:share': { icon: shIcon('shicon:share-network'), label: $localize`QNAP shared folder` },
+    hyperv: { icon: shIcon('shicon:cube'), label: $localize`Hyper-V` },
+    'hyperv:virtualmachine': {
+      icon: shIcon('shicon:monitor'),
+      label: $localize`Hyper-V virtual machine`,
+      replacesIcon: true,
+    },
+    mssql: { icon: shIcon('shicon:database'), label: $localize`Microsoft SQL Server` },
+    'mssql:server': { icon: shIcon('shicon:hard-drives'), label: $localize`SQL Server host` },
+    'mssql:instance': { icon: shIcon('shicon:stack'), label: $localize`SQL Server instance` },
+    'mssql:database': { icon: shIcon('shicon:database'), label: $localize`SQL Server database`, replacesIcon: true },
+  };
   createFolderDialogOpen = signal(false);
   createFolderPath = signal<string | null>(null);
   errorMessage = signal<string | null>(null);
@@ -217,6 +256,40 @@ export default class FileTreeComponent {
   });
 
   filterGroups = this.#sysInfo.filterGroups();
+
+  // Source folders that only back up a chosen set of their contents
+  pickedFolders = computed(() => new Set(findIncludePicks(this.currentPathArray()).map((pick) => pick.folder)));
+  includePickLabels = {
+    choose: $localize`Choose what to include`,
+    edit: $localize`Edit what is included`,
+  };
+
+  isPickedFolder(node: FileTreeNode) {
+    const folder = this.includePickFolder(node);
+    return folder !== null && this.pickedFolders().has(folder);
+  }
+
+  offersIncludePicker(node: FileTreeNode) {
+    return this.enableIncludePicker() && node.cls === 'folder' && node.id !== ROOTPATH && !node.isLoadMore;
+  }
+
+  // The folder a pick is stored under is the node id as-is: a shortcut such as %MY_DOCUMENTS% stays
+  // a token, since its entries are listed as %MY_DOCUMENTS%/name and filters accept that form.
+  // The root of a remote source is its mount, whose entries are listed below it with a separator.
+  includePickFolder(node: FileTreeNode): string | null {
+    if (!node.id) return null;
+    if (node.remoteSource && !node.remoteSource.path) return this.#appendDirSep(node.id);
+    return node.id;
+  }
+
+  requestIncludePick(event: Event, node: FileTreeNode) {
+    event.stopPropagation();
+    event.preventDefault();
+    const folder = this.includePickFolder(node);
+    if (this.disabled() || !folder) return;
+    this.includePick.emit(folder);
+  }
+
   isByBackupSettings = computed(() => {
     const backupSettings = this.backupSettings();
 
@@ -251,6 +324,11 @@ export default class FileTreeComponent {
       })
       .join('\0');
   });
+
+  /** Whether the path is the mount folder of the remote source rather than a folder inside it. */
+  #isRemoteMount(path: string, remote: RemoteSource) {
+    return path.replace(/[\\/]$/, '') === remote.mount.replace(/[\\/]$/, '');
+  }
 
   #parseRemotePath(path: string | null | undefined): RemoteSource | null {
     if (!path) return null;
@@ -408,225 +486,30 @@ export default class FileTreeComponent {
       if (name) knownNames.set(path, name);
     }
 
-    // Build path info map from search results
-    const pathInfoMap = new Map<
-      string,
-      { part: string; parentPath: string; isFolder: boolean; match: SearchEntriesItemDto | null }
-    >();
-
-    for (const searchEntry of searchResults) {
-      const resultPath = searchEntry.Path ?? '';
-      const pathDelimiter = this.#getPathDelimiter(resultPath);
-      // Preserve the leading separators of the original path (Posix or UNC)
-      let rootPrefix = '';
-      while (pathDelimiter !== '' && resultPath.startsWith(rootPrefix + pathDelimiter)) {
-        rootPrefix += pathDelimiter;
-      }
-      const parts = resultPath.split(pathDelimiter).filter((p) => p !== '');
-
-      let currentPath = '';
-      for (let i = 0; i < parts.length; i++) {
-        const part = parts[i];
-        const isLastPart = i === parts.length - 1;
-        const isFolder = !isLastPart || this.#isFolder(resultPath);
-
-        const parentPath = currentPath || ROOTPATH;
-        const prefix = currentPath
-          ? currentPath.endsWith(pathDelimiter)
-            ? currentPath.slice(0, -pathDelimiter.length)
-            : currentPath
-          : '';
-        currentPath = prefix ? `${prefix}${pathDelimiter}${part}` : `${rootPrefix}${part}`;
-        if (isFolder && !currentPath.endsWith(pathDelimiter)) {
-          currentPath += pathDelimiter;
-        }
-
-        if (!pathInfoMap.has(currentPath)) {
-          pathInfoMap.set(currentPath, {
-            part,
-            parentPath,
-            isFolder,
-            match: isLastPart ? searchEntry : null,
-          });
-        } else if (isLastPart) {
-          const existing = pathInfoMap.get(currentPath)!;
-          existing.match = searchEntry;
-        }
-      }
-    }
-
-    // Build children map
-    const childrenMap = new Map<string, string[]>();
-    for (const [path, info] of pathInfoMap) {
-      if (!childrenMap.has(info.parentPath)) {
-        childrenMap.set(info.parentPath, []);
-      }
-      childrenMap.get(info.parentPath)!.push(path);
-    }
-
-    const nameOf = (path: string, info: { part: string; match: SearchEntriesItemDto | null }) =>
-      this.#getDisplayName(knownNames.get(path) ?? info.part, info.match?.Metadata) ?? info.part;
-
-    // Determine which paths are "visible" (not collapsed into a parent chain)
-    // and what their collapsed display text should be
-    const visiblePaths = new Set<string>();
-    const collapsedTextMap = new Map<string, string>(); // visible path -> display text
-
-    for (const [path, info] of pathInfoMap) {
-      if (!info.isFolder) {
-        // Files are always visible
-        visiblePaths.add(path);
-        continue;
-      }
-
-      // A folder is hidden (collapsed into its parent) if:
-      // - Its parent has exactly ONE child total
-      // - AND that one child is this folder
-      //
-      // This means the folder is just a passthrough with no siblings.
-      // We collapse it into the nearest visible ancestor.
-
-      const parentChildren = childrenMap.get(info.parentPath) || [];
-      const isOnlyChild = parentChildren.length === 1 && parentChildren[0] === path;
-
-      if (isOnlyChild && info.parentPath !== ROOTPATH) {
-        // This folder is hidden - collapsed into parent
-        continue;
-      }
-
-      // This folder is visible
-      visiblePaths.add(path);
-
-      // Build collapsed text if this folder starts a single-child chain
-      // Walk down the chain and concatenate names
-      const chainDelimiter = this.#getPathDelimiter(path);
-      let chainText = nameOf(path, info);
-      let chainPath = path;
-      while (true) {
-        const chainChildren = childrenMap.get(chainPath) || [];
-        if (chainChildren.length !== 1) break;
-
-        const nextPath = chainChildren[0];
-        const nextInfo = pathInfoMap.get(nextPath);
-        if (!nextInfo || !nextInfo.isFolder) break;
-
-        chainText += chainDelimiter + nameOf(nextPath, nextInfo);
-        chainPath = nextPath;
-      }
-
-      // Only set collapsed text if we actually collapsed something
-      if (chainPath !== path) {
-        collapsedTextMap.set(path, chainText);
-      }
-    }
-
-    // Also make root visible
-    visiblePaths.add(ROOTPATH);
-
-    // Build the tree without a root node
-    // Top-level items are direct children of an implicit root
-    const topLevelNodes: FileTreeNode[] = [];
-    const nodeMap = new Map<string, FileTreeNode>();
-
-    // Sort visible paths by depth, so a parent is always created before its children
-    const pathDepth = (path: string) => path.split(this.#getPathDelimiter(path)).filter((x) => x !== '').length;
-    const sortedPaths = Array.from(visiblePaths)
-      .filter((p) => p !== ROOTPATH)
-      .sort((a, b) => pathDepth(a) - pathDepth(b) || a.localeCompare(b));
-
-    for (const path of sortedPaths) {
-      const info = pathInfoMap.get(path);
-      if (!info) continue;
-
-      // Find the actual parent in the visible tree
-      let parentPath = info.parentPath;
-      while (parentPath !== ROOTPATH && !visiblePaths.has(parentPath)) {
-        const parentInfo = pathInfoMap.get(parentPath);
-        parentPath = parentInfo?.parentPath || ROOTPATH;
-      }
-
-      // Check if a node with this id already exists
-      if (nodeMap.has(path)) continue;
-
-      const displayText = collapsedTextMap.get(path) ?? nameOf(path, info);
-      const isGenerated = info.match === null;
-
-      const evalState =
-        info.match !== null && !info.isFolder && showHiddenNodes
-          ? TreeEvalEnum.None
-          : this.#performRemoteEval()
-            ? this.#evalRemote(path, null, currentPaths, info.isFolder ? 'folder' : 'file')
-            : this.#eval(currentPaths, path, info.isFolder ? 'folder' : 'file', null);
-
-      const newNode: FileTreeNode = {
-        id: path,
-        resolvedpath: path,
-        text: displayText,
-        parentPath: parentPath,
-        children: [],
-        evalState: evalState,
-        isIndeterminate: this.isIndeterminate(currentPaths, path),
-        cls: info.isFolder ? 'folder' : 'file',
-        isSearchMatch: info.match !== null,
-        isGenerated: isGenerated,
-        hasChildrenInSearch: (childrenMap.get(path)?.length || 0) > 0,
-        iconCls: null,
-        check: false,
-        leaf: !info.isFolder,
-        hidden: false,
-        systemFile: false,
-        temporary: false,
-        symlink: false,
-        fileSize: info.match?.Size ?? 0,
-      };
-
-      nodeMap.set(path, newNode);
-
-      if (parentPath === ROOTPATH) {
-        topLevelNodes.push(newNode);
-      } else {
-        const parentNode = nodeMap.get(parentPath);
-        if (parentNode) {
-          parentNode.children.push(newNode);
-        }
-      }
-    }
-
-    this.#sortNodes(topLevelNodes);
-
-    return topLevelNodes;
+    return buildSearchResultTree({
+      searchResults,
+      knownNames,
+      showHiddenNodes,
+      getPathDelimiter: (path) => this.#getPathDelimiter(path),
+      isFolder: (path) => this.#isFolder(path),
+      getDisplayName: (text, metadata) => this.#getDisplayName(text, metadata),
+      evaluate: (path, kind) =>
+        this.#performRemoteEval()
+          ? this.#evalRemote(path, null, currentPaths, kind)
+          : this.#eval(currentPaths, path, kind, null),
+      isIndeterminate: (path) => this.isIndeterminate(currentPaths, path),
+      sort: {
+        foldersFirst: this.#fileTreeState.foldersFirst(),
+        caseSensitive: this.#fileTreeState.caseSensitiveSort(),
+      },
+    });
   });
 
-  // Sorts the nodes according to the user's sort preferences.
-  // Children of paginated sources (detected by the presence of a "load more"
-  // node) are paginated and sorted on the server, so they are left in server
-  // order. Unpaginated sources never produce "load more" nodes.
   #sortNodes(nodes: FileTreeNode[]) {
-    const foldersFirst = this.#fileTreeState.foldersFirst();
-    const caseSensitive = this.#fileTreeState.caseSensitiveSort();
-    const isPaginated = nodes.some((x) => x.isLoadMore);
-
-    if (!isPaginated) {
-      nodes.sort((a, b) => {
-        if (foldersFirst) {
-          if (a.cls === 'folder' && b.cls !== 'folder') return -1;
-          if (a.cls !== 'folder' && b.cls === 'folder') return 1;
-        }
-
-        const aText = a.text ?? '';
-        const bText = b.text ?? '';
-
-        return caseSensitive
-          ? aText < bText
-            ? -1
-            : aText > bText
-              ? 1
-              : 0
-          : aText.localeCompare(bText, undefined, { sensitivity: 'base' });
-      });
-    }
-
-    nodes.forEach((node) => this.#sortNodes(node.children));
+    sortFileTreeNodes(nodes, {
+      foldersFirst: this.#fileTreeState.foldersFirst(),
+      caseSensitive: this.#fileTreeState.caseSensitiveSort(),
+    });
   }
 
   treeStructure = computed<FileTreeNode[]>(() => {
@@ -647,20 +530,27 @@ export default class FileTreeComponent {
     let roots: FileTreeNode[] = [];
 
     if (rootPaths.length > 0) {
-      roots = rootPaths.map((rootPath) => {
+      const rootRemote = this.#rootRemoteSource();
+      roots = rootPaths.map((rootPath, index) => {
         const evalState = this.#performRemoteEval()
           ? this.#evalRemote(rootPath, null, currentPaths, 'folder')
           : this.#eval(currentPaths, rootPath, 'folder', null);
+        const remoteSource = index === 0 && rootRemote ? rootRemote : undefined;
 
         return {
           id: rootPath,
           resolvedpath: rootPath,
-          text: this.#getDisplayName(rootPath, rootMetadata[rootPath]),
+          text:
+            remoteSource && this.#isRemoteMount(rootPath, remoteSource)
+              ? getRemotePathDisplayName(remoteSource.url)
+              : this.#getDisplayName(rootPath, rootMetadata[rootPath]),
           parentPath: '',
           children: [],
           evalState: evalState,
           isIndeterminate: false,
           cls: this.#isFolder(rootPath) ? 'folder' : 'file',
+          remoteSource,
+          customIcon: remoteSource ? getBackendIcon(remoteSource.url) : undefined,
         } as any as FileTreeNode;
       });
     } else {
@@ -846,10 +736,8 @@ export default class FileTreeComponent {
 
     for (let index = 0; index < sources.length; index++) {
       const x = sources[index];
-      if (nodeId === x || resolvedNodeId == x) {
-        result = TreeEvalEnum.Included;
-        break;
-      }
+      // A source itself is always backed up; the backend never runs its root entries through the filters
+      if (nodeId === x || resolvedNodeId == x) return TreeEvalEnum.Included;
 
       if (!isMultiSelect || !this.#isFolder(x)) continue;
 
@@ -863,98 +751,10 @@ export default class FileTreeComponent {
 
     if (filters.length === 0) return result;
 
-    // Filters only apply to paths the backup enumerates, so a node outside every
-    // selected source keeps its state no matter what the filters match (#580)
+    // Keep the upstream source-scope guard before evaluating local filters (#580).
     if (!isPathWithinSources(nodeId, resolvedNodeId, sources)) return result;
-
-    for (let i = 0; i < filters.length; i++) {
-      const pathPart = filters[i];
-      const x = pathPart.slice(1);
-      const dir = pathPart.startsWith('-') ? TreeEvalEnum.Excluded : TreeEvalEnum.Included;
-
-      if (this.#isFolder(x)) {
-        // Works - Folder
-        if (nodeType !== 'folder') continue;
-        const res = nodeId === x || resolvedNodeId == x;
-
-        if (res) {
-          result = dir;
-
-          break;
-        }
-      }
-
-      if (x.startsWith('*') && (x.endsWith(`*\\`) || x.endsWith('*/'))) {
-        // Works - FolderNameIncludes
-        if (nodeType !== 'folder') continue;
-        const trimmedX = x.slice(1, -2);
-
-        if (trimmedX === '') break;
-
-        const res = nodeId?.includes(trimmedX + '\\') || nodeId?.includes(trimmedX + '/');
-
-        if (res) {
-          result = dir;
-          break;
-        }
-      }
-
-      if (x.startsWith('[.*') && (x.endsWith(`[^\\/]*]`) || x.endsWith(`[^\\\\]*]`))) {
-        // Works - FileNameIncludes
-        if (nodeType !== 'file') continue;
-
-        const regexPattern = x.slice(3, -7);
-        const regex = new RegExp(regexPattern);
-        const res = regex.test(nodeId!);
-
-        if (res) {
-          result = dir;
-          break;
-        }
-      }
-
-      if (x.startsWith('[') && x.endsWith(']')) {
-        // Works - Regex
-        const regexPattern = x.slice(1, -1);
-        const res = regexMatchesPath(nodeId!, regexPattern);
-
-        if (res) {
-          result = dir;
-          break;
-        }
-      }
-
-      if (x.startsWith('*.')) {
-        // Works - File Extension globbing
-        if (nodeType !== 'file') continue;
-        if (x.replace('*.', '').length === 0) continue;
-
-        const res = globMatchesPath(nodeId!, x);
-
-        if (res) {
-          result = dir;
-          break;
-        }
-      }
-
-      // Works - Expression
-      if (x === '') continue;
-
-      // Matching file or folder
-      if (x === nodeId) {
-        result = dir;
-        break;
-      }
-
-      const res = globMatchesPath(nodeId!, x);
-
-      if (res) {
-        result = dir;
-        break;
-      }
-    }
-
-    return result;
+    const included = evaluateFileTreeFilters(filters, { path: nodeId, resolvedPath: resolvedNodeId, kind: nodeType });
+    return included === undefined ? result : included ? TreeEvalEnum.Included : TreeEvalEnum.Excluded;
   }
 
   // A folder is partially selected when any selected path (folder or file) lies inside it.
@@ -1069,7 +869,9 @@ export default class FileTreeComponent {
                 cls: x.cls,
                 text: this.#getDisplayName(x.text, (x as any)?.Metadata),
                 iconCls: x.iconCls,
+                kind: x.kind ?? null,
                 fileSize: x.fileSize,
+                lastModified: (x as any)?.lastModified ?? null,
                 resolvedpath: x.resolvedpath,
                 parentPath: this.getParentPath(x.id ?? ''),
               } as any as TreeNode;
@@ -1077,7 +879,9 @@ export default class FileTreeComponent {
             })
           );
         }
-        this.#getPath(null, roots[0]);
+        // A remote root lists through its source; the stand-in node only carries that source
+        const rootRemote = this.#rootRemoteSource();
+        this.#getPath(rootRemote ? ({ id: roots[0], remoteSource: rootRemote } as FileTreeNode) : null, roots[0]);
       } else {
         this.#getPath(null, ROOTPATH);
       }
@@ -1182,6 +986,48 @@ export default class FileTreeComponent {
     return nodes.filter((node) => node.isLoadMore || !node.hidden || this._showHiddenNodes());
   }
 
+  /**
+   * The last-modified time of a node, or null when the listing did not provide a usable one.
+   * Unknown timestamps are reported as the .NET default (year 0001) or the Unix epoch and are hidden.
+   */
+  treeNodeLastModified(node: FileTreeNode): string | null {
+    const value = node.lastModified;
+    if (!value) return null;
+    const time = Date.parse(value);
+    if (isNaN(time) || time <= 0) return null;
+    return value;
+  }
+
+  /** Tooltip for the last-modified time, with the date formatted in the medium locale style. */
+  treeNodeLastModifiedTitle(lastModified: string): string {
+    const date = this.#datePipe.transform(lastModified, 'medium') ?? lastModified;
+    return $localize`Last modified: ${date}:date:`;
+  }
+
+  /** Which corner badge to layer over the node's folder/file icon, if any. */
+  treeNodeBadge(node: FileTreeNode): TreeNodeBadge | null {
+    if (node.symlink) return this.#treeNodeBadges['symlink'];
+
+    // Servers that predate the kind field only mark the home folder by its token
+    const kind = node.kind ?? (node.id === '%HOME%' ? 'special:home' : null);
+    if (!kind) return null;
+
+    return this.#treeNodeBadges[kind] ?? this.#treeNodeBadges[kind.split(':')[0]] ?? null;
+  }
+
+  lockedLinkLabel(node: FileTreeNode): string | null {
+    return node.symlink && node.kind === 'locked' ? this.#treeNodeBadges['locked'].label : null;
+  }
+
+  /** Accessible name for a tree row; badges that convey a state are announced since the badge icon is visual only. */
+  treeItemLabel(node: FileTreeNode): string {
+    const name = node.text ?? node.id ?? '';
+    const badge = this.treeNodeBadge(node);
+    const locked = this.lockedLinkLabel(node);
+    if (locked && badge) return $localize`${name}:name: (${badge.label}:linkState:, ${locked}:accessState:)`;
+    return badge?.announce ? $localize`${name}:name: (${badge.label}:state:)` : name;
+  }
+
   treeSetSize(nodes: FileTreeNode[]) {
     return nodes.some((node) => node.isLoadMore) ? -1 : nodes.length;
   }
@@ -1198,8 +1044,12 @@ export default class FileTreeComponent {
     return this.#treeId + '-group-' + encodeURIComponent(node.id ?? '');
   }
 
+  canExpandTreeNode(node: FileTreeNode) {
+    return node.cls === 'folder' && node.kind !== 'locked';
+  }
+
   isTreeNodeExpanded(node: FileTreeNode) {
-    return node.cls === 'folder' && (node.children.length > 0 || this.#expandedPaths().has(node.id ?? ''));
+    return this.canExpandTreeNode(node) && (node.children.length > 0 || this.#expandedPaths().has(node.id ?? ''));
   }
 
   canSelectTreeNode(node: FileTreeNode) {
@@ -1208,6 +1058,18 @@ export default class FileTreeComponent {
 
   treeSelectionState(node: FileTreeNode): boolean | 'mixed' | null {
     return this.#treeSelection().get(node.id ?? '') ?? null;
+  }
+
+  toggleMaximized() {
+    this.maximized.update((value) => !value);
+  }
+
+  // Escape restores the maximized tree; swallow the event so an enclosing dialog does not close as well.
+  onDocumentEscape(event: Event) {
+    if (!this.maximized() || this.createFolderDialogOpen()) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    this.maximized.set(false);
   }
 
   rememberTreeFocus(node: FileTreeNode) {
@@ -1274,7 +1136,7 @@ export default class FileTreeComponent {
         this.#focusTreePath(rows.at(-1)?.node.id);
         break;
       case 'ArrowRight': {
-        if (node.cls !== 'folder') break;
+        if (!this.canExpandTreeNode(node)) break;
         const firstChild = this.visibleTreeChildren(node.children)[0];
         if (firstChild) this.#focusTreePath(firstChild.id);
         else if (!this.isTreeNodeExpanded(node) && this.isLoading() !== node.id) {
@@ -1308,8 +1170,42 @@ export default class FileTreeComponent {
     }
   }
 
+  #rangeAnchor: string | null = null;
+
+  #rangeRows(): FileTreeNode[] {
+    const rows: FileTreeNode[] = [];
+    const visit = (nodes: FileTreeNode[]) => {
+      for (const node of nodes) {
+        if (node.hidden && !this._showHiddenNodes()) continue;
+        if (!node.isLoadMore) rows.push(node);
+        visit(node.children);
+      }
+    };
+    visit(this.treeStructure());
+    return rows;
+  }
+
+  #selectRange(event: MouseEvent, target: FileTreeNode): boolean {
+    const rows = this.#rangeRows();
+    const start = rows.findIndex((row) => row.id === this.#rangeAnchor);
+    const end = rows.findIndex((row) => row.id === target.id);
+    if (start < 0 || end < 0) return false;
+    const anchor = this.#rangeAnchor;
+    event.preventDefault();
+    for (const row of rows.slice(Math.min(start, end), Math.max(start, end) + 1)) {
+      // Re-evaluate after each selection: a selected folder includes its descendants.
+      const current = this.#rangeRows().find((candidate) => candidate.id === row.id);
+      if (!current || current.id === ROOTPATH || current.isLoadMore) continue;
+      if (this.selectFiles() && current.cls === 'folder') continue;
+      if (current.evalState === TreeEvalEnum.Included || current.evalState === TreeEvalEnum.IncludedByParent) continue;
+      this.toggleSelectedNode(new Event('click'), current);
+    }
+    this.#rangeAnchor = anchor;
+    return true;
+  }
+
   toggleSelectedNode($event: Event, node: FileTreeNode) {
-    if (!this.#isTreeNodeActionable(node)) return;
+    if (this.disabled() || !this.#isTreeNodeActionable(node)) return;
 
     $event.stopPropagation();
 
@@ -1323,6 +1219,10 @@ export default class FileTreeComponent {
     // Same eligibility rules as the aria-checked/aria-selected state of the row
     if (!this.canSelectTreeNode(node)) return;
 
+    if (this.multiSelect() && $event instanceof MouseEvent && $event.shiftKey && this.#selectRange($event, node))
+      return;
+    this.#rangeAnchor = node.id ?? null;
+
     const currentPaths = this.currentPathArray();
     const currentPathsWithRemotes = this.#resolveWithRemoteSource(currentPaths);
 
@@ -1331,6 +1231,16 @@ export default class FileTreeComponent {
     const nodeId = this.#resolveNodeId(node);
     const pathToTest = isChildOfSelected ? `-${nodeId}` : nodeId!;
     const isFolder = this.#isFolder(nodeId!);
+
+    // Inside a picked folder a click picks or unpicks the entry instead of adding a plain exclude
+    if (this.multiSelect() && this.enableIncludePicker() && !currentPathsWithRemotes.includes(nodeId!)) {
+      const pick = findIncludePickContaining(currentPaths, nodeId!);
+      if (pick) {
+        const included = node.evalState === TreeEvalEnum.Included || node.evalState === TreeEvalEnum.IncludedByParent;
+        this.currentPath.set(toggleInIncludePick(currentPaths, pick, nodeId!, included).join('\0'));
+        return;
+      }
+    }
 
     if (this.multiSelect()) {
       if (currentPathsWithRemotes.includes(nodeId!)) {
@@ -1363,7 +1273,7 @@ export default class FileTreeComponent {
 
   toggleNode($event: Event, path: string, node: FileTreeNode | null = null) {
     $event.stopPropagation();
-    if (node?.cls !== 'folder') return;
+    if (!node || !this.canExpandTreeNode(node)) return;
     if (this.isTreeNodeExpanded(node)) {
       const prefix = node.id as string;
       this.#expandedPaths.update((paths) => new Set([...paths].filter((x) => !x.startsWith(prefix))));
@@ -1635,7 +1545,13 @@ export default class FileTreeComponent {
           let alignDataArray =
             this.isByBackupSettings() || this.customRemoteMode() !== null || remote
               ? result.items.map(
-                  (y: { Path: string; Size: number; Metadata: { [key: string]: string | null } | null }) => {
+                  (y: {
+                    Path: string;
+                    Size: number;
+                    IsSymlink?: boolean;
+                    LastModified?: string | null;
+                    Metadata: { [key: string]: string | null } | null;
+                  }) => {
                     this.#detectExtendData(y.Metadata);
                     const sep = this.#getPathDelimiter(y.Path);
                     const text = this.#getDisplayName(
@@ -1674,8 +1590,10 @@ export default class FileTreeComponent {
                       leaf: node !== null,
                       resolvedpath: y.Path,
                       hidden: false,
+                      symlink: y.IsSymlink ?? false,
                       remoteSource: newRemoteSource,
                       fileSize: y.Size,
+                      lastModified: y.LastModified ?? null,
                     };
                   }
                 )

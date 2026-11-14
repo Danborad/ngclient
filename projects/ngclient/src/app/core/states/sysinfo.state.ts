@@ -43,6 +43,11 @@ export class SysinfoState {
     return this.systemInfo()?.RestoreDestinationProviderModules ?? [];
   });
 
+  /** The time zones the server can schedule in; empty on servers that do not report them */
+  timeZones = computed(() => {
+    return this.systemInfo()?.TimeZones ?? [];
+  });
+
   allOptionsGrouped = computed(() => {
     const defaultOptions = {
       displayName: 'Default',
@@ -110,6 +115,12 @@ export class SysinfoState {
     return apiExtensions.includes('v2:backup:restore-test');
   });
 
+  // Backups can be enabled and disabled; the scheduler skips disabled backups
+  hasBackupEnableDisable = computed(() => {
+    const apiExtensions = this.systemInfo()?.APIExtensions ?? [];
+    return apiExtensions.includes('v1:backup:enable-disable');
+  });
+
   hasRestoreOptions = computed(() => {
     const apiExtensions = this.systemInfo()?.APIExtensions ?? [];
     return apiExtensions.includes('v1:backup:restore-options');
@@ -132,6 +143,12 @@ export class SysinfoState {
   hasV2PurgeFiles = computed(() => {
     const apiExtensions = this.systemInfo()?.APIExtensions ?? [];
     return apiExtensions.includes('v2:backup:purge-files');
+  });
+
+  // Older servers always compact after purging files and do not accept the SuppressCompact field
+  hasV2PurgeFilesSuppressCompact = computed(() => {
+    const apiExtensions = this.systemInfo()?.APIExtensions ?? [];
+    return apiExtensions.includes('v2:backup:purge-files:suppress-compact');
   });
 
   hasV2TestOperations = computed(() => {
@@ -196,9 +213,33 @@ export class SysinfoState {
     return apiExtensions.includes('v1:ipc:controller');
   });
 
+  /** The server lists the per-backup file watcher option, so it has the file system watcher feature */
+  hasFileWatcher = computed(() => {
+    const serverOnlyOptions = this.systemInfo()?.ServerOnlyOptions ?? [];
+    return serverOnlyOptions.some((x) => x.Name === 'use-file-watcher');
+  });
+
+  /** The server has the MCP endpoint; reported whether the endpoint is switched on or off */
+  hasMcpServer = computed(() => {
+    const apiExtensions = this.systemInfo()?.APIExtensions ?? [];
+    return apiExtensions.includes('v2:mcp:server');
+  });
+
   hasSyncMode = computed(() => {
     const apiExtensions = this.systemInfo()?.APIExtensions ?? [];
     return apiExtensions.includes('v1:backup:sync-mode');
+  });
+
+  /** Sync jobs can keep each run in a dated snapshot folder, with a number of snapshots to keep */
+  hasSyncSnapshots = computed(() => {
+    const apiExtensions = this.systemInfo()?.APIExtensions ?? [];
+    return apiExtensions.includes('v1:backup:sync-snapshots');
+  });
+
+  /** Sync jobs can be restored through the restore flow: versions, folder listing and restore */
+  hasSyncRestore = computed(() => {
+    const apiExtensions = this.systemInfo()?.APIExtensions ?? [];
+    return apiExtensions.includes('v1:backup:sync-restore');
   });
 
   defaultOAuthUrl = computed(() => {

@@ -52,6 +52,11 @@ async function setupAuthentication(
       Options: [],
       ServerOnlyOptions: [],
       SpecialFolders: [],
+      TimeZones: [
+        { ID: 'UTC', DisplayName: '(UTC) Coordinated Universal Time', CurrentUTCOffset: '00:00:00' },
+        { ID: 'Europe/Copenhagen', DisplayName: '(UTC+01:00) Central European Time', CurrentUTCOffset: '01:00:00' },
+        { ID: 'America/New_York', DisplayName: 'Eastern Time', CurrentUTCOffset: '-05:00:00' },
+      ],
       APIExtensions: [
         'v1:websocket',
         'v1:websocket:authenticate',
@@ -144,6 +149,26 @@ async function setupAuthentication(
     }
   };
 
+  const sendServerStatus = (changes: Record<string, unknown>) => {
+    Object.assign(serverStatus, changes, { LastEventID: serverStatus.LastEventID + 1 });
+    for (const socket of sockets) socket.send(JSON.stringify(serverStatus));
+  };
+
+  const sendNotifications = (notifications: unknown[]) => {
+    getResponses['/api/v1/notifications'] = notifications;
+    subscriptionResponses.notifications = notifications;
+    for (const socket of sockets) {
+      socket.send(JSON.stringify({ Type: 'notifications', ApiVersion: 1, Data: notifications }));
+    }
+  };
+
+  const sendRemoteControlStatus = (status: Record<string, unknown>) => {
+    getResponses['/api/v1/remotecontrol/status'] = status;
+    subscriptionResponses.remotecontrol = status;
+    for (const socket of sockets) {
+      socket.send(JSON.stringify({ Type: 'remotecontrol', ApiVersion: 1, Data: status }));
+    }
+  };
   return {
     loginRequests,
     refreshRequests,
@@ -154,6 +179,9 @@ async function setupAuthentication(
     pageErrors,
     subscriptions,
     sendBackupList,
+    sendServerStatus,
+    sendNotifications,
+    sendRemoteControlStatus,
   };
 }
 

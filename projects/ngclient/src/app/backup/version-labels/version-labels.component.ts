@@ -1,12 +1,12 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
-import { FormsModule } from '@angular/forms';
+import { disabled, form, FormField } from '@angular/forms/signals';
 import { Router, RouterLink } from '@angular/router';
 import { ShipButton } from '@ship-ui/core/ship-button';
 import { ShipDialogService } from '@ship-ui/core/ship-dialog';
 import { ShipProgressBar } from '@ship-ui/core/ship-progress-bar';
 import { ShipTable } from '@ship-ui/core/ship-table';
-import { concatMap, defer, finalize, from } from 'rxjs';
+import { concatMap, defer, finalize, from, Subscription } from 'rxjs';
 import { ConfirmDialogComponent } from '../../core/components/confirm-dialog/confirm-dialog.component';
 
 import { ShipFormField } from '@ship-ui/core/ship-form-field';
@@ -23,16 +23,7 @@ type OrderBy = 'version' | 'size' | 'files' | 'label';
 
 @Component({
   selector: 'app-version-labels',
-  imports: [
-    FormsModule,
-    ShipButton,
-    ShipProgressBar,
-    ShipTable,
-    BytesPipe,
-    RelativeTimePipe,
-    RouterLink,
-    ShipFormField,
-  ],
+  imports: [FormField, ShipButton, ShipProgressBar, ShipTable, BytesPipe, RelativeTimePipe, RouterLink, ShipFormField],
   templateUrl: './version-labels.component.html',
   styleUrl: './version-labels.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -57,8 +48,14 @@ export default class VersionLabelsComponent {
   isLoading = computed(() => this.versionsResource.isLoading());
   isSaving = signal(false);
   versions = signal<VersionLabelOption[]>([]);
+  labelsForm = form(this.versions, (path) => disabled(path, () => this.isSaving()));
+  #saveSubscription?: Subscription;
 
   constructor() {
+    effect((onCleanup) => {
+      this.id();
+      onCleanup(() => this.#saveSubscription?.unsubscribe());
+    });
     effect(() => {
       const res = this.versionsResource.value();
       if (res) {
@@ -77,30 +74,30 @@ export default class VersionLabelsComponent {
   }
 
   saveLabels() {
+    if (this.isSaving()) return;
     const changed = this.changedItems();
     if (changed.length === 0) return;
+    const id = this.id();
+    const requests = changed.map((v) => ({
+      BackupId: id,
+      Version: v.Version,
+      Label: v.EditedLabel.trim() === '' ? null : v.EditedLabel.trim(),
+    }));
 
     this.isSaving.set(true);
 
     // Requests are run sequentially because the server does not allow concurrent database access
-    from(changed)
+    this.#saveSubscription = from(requests)
       .pipe(
-        concatMap((v) =>
-          this.#dupServer.postApiV2BackupSetVersionLabel({
-            body: {
-              BackupId: this.id(),
-              Version: v.Version,
-              Label: v.EditedLabel.trim() === '' ? null : v.EditedLabel.trim(),
-            },
-          })
-        ),
+        concatMap((body) => this.#dupServer.postApiV2BackupSetVersionLabel({ body })),
         finalize(() => this.isSaving.set(false))
       )
       .subscribe({
         complete: () => {
-          this.#router.navigate(['/']);
+          if (this.id() === id) this.#router.navigate(['/']);
         },
         error: (err) => {
+          if (this.id() !== id) return;
           this.#dialog.open(ConfirmDialogComponent, {
             data: {
               title: $localize`Failed to set version labels`,

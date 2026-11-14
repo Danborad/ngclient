@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, inject, output, signal } from '@angular/core';
-import { FormsModule } from '@angular/forms';
+import { disabled, form, FormField } from '@angular/forms/signals';
 import { ShipTooltip } from '@ship-ui/core/ship-tooltip';
 import { ShipAlert } from '@ship-ui/core/ship-alert';
 import { ShipButton } from '@ship-ui/core/ship-button';
@@ -7,21 +7,26 @@ import { ShipFormField } from '@ship-ui/core/ship-form-field';
 import { ShipIcon } from '@ship-ui/core/ship-icon';
 import { defer, finalize } from 'rxjs';
 import { DuplicatiServer } from '../../core/openapi';
+import { AppAuthState } from '../../core/states/app-auth.state';
 
 @Component({
   selector: 'app-change-passphrase-alert-dialog',
-  imports: [FormsModule, ShipAlert, ShipFormField, ShipIcon, ShipTooltip, ShipButton],
+  imports: [FormField, ShipAlert, ShipFormField, ShipIcon, ShipTooltip, ShipButton],
   templateUrl: './change-passphrase-alert-dialog.component.html',
   styleUrl: './change-passphrase-alert-dialog.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class ChangePassphraseAlertDialogComponent {
   #dupServer = inject(DuplicatiServer);
+  #auth = inject(AppAuthState);
   closed = output();
 
   isUpdating = signal(false);
-  passphrase = signal('');
-  repeatPassphrase = signal('');
+  passphraseForm = form(signal({ passphrase: '', repeatPassphrase: '' }), (path) => {
+    disabled(path.repeatPassphrase, ({ valueOf }) => valueOf(path.passphrase).length === 0);
+  });
+  passphrase = this.passphraseForm.passphrase().value;
+  repeatPassphrase = this.passphraseForm.repeatPassphrase().value;
 
   updatePassphrase() {
     if (this.passphrase() !== this.repeatPassphrase()) return;
@@ -37,7 +42,11 @@ export class ChangePassphraseAlertDialogComponent {
     )
       .pipe(finalize(() => this.isUpdating.set(false)))
       .subscribe({
-        next: () => this.closed.emit(),
+        next: () => {
+          this.closed.emit();
+          // The server has revoked all tokens, including the one this session uses
+          this.#auth.signOutAfterPassphraseChange();
+        },
       });
   }
 

@@ -4,6 +4,20 @@
   display: block;
 }
 
+.log-pagination,
+.log-load-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: p2r(16);
+  padding: p2r(16);
+}
+
+.log-empty {
+  padding: p2r(16);
+}
+
 .log-entry {
   display: flex;
   flex-direction: column;
@@ -310,5 +324,29 @@ details {
 
   button {
     white-space: nowrap;
+  }
+}
+
+.restore-test-entry {
+  display: flex;
+  flex-direction: column;
+  gap: p2r(4);
+  padding: p2r(12);
+  border-radius: var(--shape-2);
+  background-color: var(--base-2);
+  min-width: 0;
+
+  .path {
+    font-family: monospace;
+    word-break: break-all;
+  }
+
+  .reason {
+    font-weight: 600;
+  }
+
+  .diff {
+    color: var(--base-7);
+    word-break: break-all;
   }
 }

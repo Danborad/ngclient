@@ -2,12 +2,7 @@
   <div class="field-row">
     @if (state() === 'inactive') {
       <sh-form-field label="Registration URL" for="remoteControlRegisterUrl">
-        <input
-          type="text"
-          sh-input
-          id="remoteControlRegisterUrl"
-          name="remoteControlRegisterUrl"
-          [(ngModel)]="registerUrl" />
+        <input type="text" sh-input id="remoteControlRegisterUrl" [formField]="registrationForm.registerUrl" />
       </sh-form-field>
 
       <button type="button" shButton class="raised" (click)="register()" i18n>Register on console</button>
@@ -43,7 +38,7 @@
     }
 
     @if (additionalReportingUrl() !== '' && state() !== 'registered') {
-      <sh-chip class="reporting-url primary simple" (click)="copyReportingUrl()" i18n>
+      <sh-chip appKeyboardAction class="reporting-url primary simple" (click)="copyReportingUrl()" i18n>
         Reporting configured by server
         @if (copiedReportingUrl() === true) {
           <sh-icon>check</sh-icon>

@@ -1616,6 +1616,30 @@
         }
       }
     },
+    "/api/v1/updates/install": {
+      "post": {
+        "tags": [
+          "Duplicati.Server"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/updates/cancel-install": {
+      "post": {
+        "tags": [
+          "Duplicati.Server"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/api/v1/webmodule/{modulekey}": {
       "post": {
         "tags": [
@@ -2163,6 +2187,50 @@
       }
     },
     "/api/v1/backup/{id}/deletedb": {
+      "post": {
+        "tags": [
+          "Duplicati.Server"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/backup/{id}/enable": {
+      "post": {
+        "tags": [
+          "Duplicati.Server"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/backup/{id}/disable": {
       "post": {
         "tags": [
           "Duplicati.Server"
@@ -2821,6 +2889,81 @@
         }
       }
     },
+    "/api/v2/mcp/tokens": {
+      "get": {
+        "tags": [
+          "Duplicati.Server"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpTokenDtoArrayResponseEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Duplicati.Server"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMcpTokenInputDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateMcpTokenOutputDtoResponseEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/mcp/token/{id}": {
+      "delete": {
+        "tags": [
+          "Duplicati.Server"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectResponseEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v2/system/status": {
       "get": {
         "tags": [
@@ -2985,35 +3128,6 @@
         }
       }
     },
-    "/api/v2/backup/restore-test": {
-      "post": {
-        "tags": [
-          "Duplicati.Server"
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RestoreTestRequestDto"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TaskStartedDto"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v2/backup/list-filesets": {
       "post": {
         "tags": [
@@ -3140,6 +3254,35 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/PurgeFilesRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskStartedDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/backup/restore-test": {
+      "post": {
+        "tags": [
+          "Duplicati.Server"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreTestRequestDto"
               }
             }
           },
@@ -3418,6 +3561,9 @@
           "OperationType": {
             "$ref": "#/components/schemas/OperationType"
           },
+          "Enabled": {
+            "type": "boolean"
+          },
           "DBPath": {
             "type": "string",
             "nullable": true
@@ -3501,6 +3647,10 @@
           },
           "OperationType": {
             "$ref": "#/components/schemas/OperationType"
+          },
+          "Enabled": {
+            "type": "boolean",
+            "nullable": true
           },
           "Sources": {
             "type": "array",
@@ -3820,6 +3970,75 @@
           "BaseUrl": {
             "type": "string",
             "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateMcpTokenInputDto": {
+        "type": "object",
+        "properties": {
+          "Name": {
+            "type": "string",
+            "nullable": true
+          },
+          "Level": {
+            "$ref": "#/components/schemas/McpTokenLevel"
+          },
+          "BackupIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "RestoreRoots": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "ExpiresIn": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateMcpTokenOutputDto": {
+        "type": "object",
+        "properties": {
+          "Token": {
+            "$ref": "#/components/schemas/McpTokenDto"
+          },
+          "AccessToken": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateMcpTokenOutputDtoResponseEnvelope": {
+        "required": [
+          "Error",
+          "StatusCode",
+          "Success"
+        ],
+        "type": "object",
+        "properties": {
+          "Success": {
+            "type": "boolean"
+          },
+          "Error": {
+            "type": "string",
+            "nullable": true
+          },
+          "StatusCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "Data": {
+            "$ref": "#/components/schemas/CreateMcpTokenOutputDto"
           }
         },
         "additionalProperties": false
@@ -5335,6 +5554,85 @@
         },
         "additionalProperties": false
       },
+      "McpTokenDto": {
+        "type": "object",
+        "properties": {
+          "Id": {
+            "type": "string",
+            "nullable": true
+          },
+          "Name": {
+            "type": "string",
+            "nullable": true
+          },
+          "Created": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "Expires": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "Expired": {
+            "type": "boolean"
+          },
+          "Level": {
+            "$ref": "#/components/schemas/McpTokenLevel"
+          },
+          "BackupIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "RestoreRoots": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "McpTokenDtoArrayResponseEnvelope": {
+        "required": [
+          "Error",
+          "StatusCode",
+          "Success"
+        ],
+        "type": "object",
+        "properties": {
+          "Success": {
+            "type": "boolean"
+          },
+          "Error": {
+            "type": "string",
+            "nullable": true
+          },
+          "StatusCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "Data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpTokenDto"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "McpTokenLevel": {
+        "enum": [
+          "Read",
+          "Backup",
+          "Restore"
+        ],
+        "type": "string"
+      },
       "NotificationDto": {
         "required": [
           "Action",
@@ -5496,6 +5794,10 @@
               "type": "integer",
               "format": "int64"
             },
+            "nullable": true
+          },
+          "SuppressCompact": {
+            "type": "boolean",
             "nullable": true
           }
         },
@@ -6281,6 +6583,7 @@
           "CLRVersion",
           "CompressionModules",
           "ConnectionModules",
+          "DataFolder",
           "DefaultOAuthURL",
           "DefaultOAuthURLv2",
           "DefaultSecretProvider",
@@ -6288,7 +6591,9 @@
           "DefaultUsageReportLevel",
           "DirectorySeparator",
           "EncryptionModules",
+          "EntryAssembly",
           "GenericModules",
+          "InstallationFolder",
           "LocalLicenseStatus",
           "LogLevels",
           "MachineName",
@@ -6317,6 +6622,8 @@
           "StartedBy",
           "SupportedLocales",
           "TimeZones",
+          "UpdateInstallSupported",
+          "UpdateInstallUnsupportedReason",
           "UserName",
           "UsingAlternateUpdateURLs",
           "WebModules"
@@ -6393,6 +6700,25 @@
             "nullable": true
           },
           "PackageTypeId": {
+            "type": "string",
+            "nullable": true
+          },
+          "EntryAssembly": {
+            "type": "string",
+            "nullable": true
+          },
+          "InstallationFolder": {
+            "type": "string",
+            "nullable": true
+          },
+          "DataFolder": {
+            "type": "string",
+            "nullable": true
+          },
+          "UpdateInstallSupported": {
+            "type": "boolean"
+          },
+          "UpdateInstallUnsupportedReason": {
             "type": "string",
             "nullable": true
           },
@@ -7034,9 +7360,17 @@
           "symlink": {
             "type": "boolean"
           },
+          "symlinkTarget": {
+            "type": "string",
+            "nullable": true
+          },
           "fileSize": {
             "type": "integer",
             "format": "int64"
+          },
+          "kind": {
+            "type": "string",
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -7092,7 +7426,10 @@
         "enum": [
           "Waiting",
           "Checking",
-          "Downloading"
+          "Downloading",
+          "Verifying",
+          "LaunchingHelper",
+          "Installing"
         ],
         "type": "string"
       },

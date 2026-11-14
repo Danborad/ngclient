@@ -72,6 +72,27 @@ describe('BackupState', () => {
     });
   });
 
+  it('retains synchronization settings and unknown options when loading and editing a secondary URL', () => {
+    const options = { count: 3, 'future-option': { enabled: true } };
+    state.mapDestinationToForm({
+      TargetURL: 'file:///primary',
+      AdditionalTargetURLs: [
+        {
+          TargetUrl: 'file:///secondary',
+          ConnectionStringID: 8,
+          UrlKey: 'second',
+          Mode: 'interval',
+          Interval: '2D',
+          Options: options,
+        },
+      ],
+    } as unknown as BackupDto);
+    expect(state.targetUrls()[1]).toMatchObject({ mode: 'interval', interval: '2D', options });
+    state.updateTargetUrl(1, 'file:///changed', 9, 'second');
+    expect(state.targetUrls()[1]).toMatchObject({ mode: 'interval', interval: '2D', options });
+    expect(options).toEqual({ count: 3, 'future-option': { enabled: true } });
+  });
+
   it('round-trips a loaded schedule without changing its local date', () => {
     vi.stubEnv('TZ', 'America/New_York');
     state.mapScheduleToForm({
@@ -80,10 +101,10 @@ describe('BackupState', () => {
       AllowedDays: ['mon', 'fri'],
     } as ScheduleDto);
 
-    expect(state.scheduleFields.nextTime.date()).toBe('2026-06-14');
-    expect(state.scheduleFields.nextTime.time()).toBe('08:50');
-    expect(state.scheduleFields.runAgain.allowedDays.mon()).toBe(true);
-    expect(state.scheduleFields.runAgain.allowedDays.fri()).toBe(true);
+    expect(state.scheduleForm.nextTime.date().value()).toBe('2026-06-14');
+    expect(state.scheduleForm.nextTime.time().value()).toBe('08:50');
+    expect(state.scheduleForm.runAgain.allowedDays.mon().value()).toBe(true);
+    expect(state.scheduleForm.runAgain.allowedDays.fri().value()).toBe(true);
     expect(state.getScheduleFormValue()?.Time).toBe('2026-06-14T12:50:00.000Z');
   });
 
@@ -103,7 +124,7 @@ describe('BackupState', () => {
 
       state.mapScheduleToForm(serverDefault);
 
-      expect(state.scheduleFields.nextTime.date()).toBe('2026-10-20');
+      expect(state.scheduleForm.nextTime.date().value()).toBe('2026-10-20');
       expect(state.getScheduleFormValue()?.Time).toBe('2026-10-20T04:00:00.000Z');
       expect(state.scheduleType()).toBe('daily');
     });
@@ -114,7 +135,7 @@ describe('BackupState', () => {
 
       state.mapScheduleToForm(serverDefault);
 
-      expect(state.scheduleFields.nextTime.date()).toBe('2026-10-21');
+      expect(state.scheduleForm.nextTime.date().value()).toBe('2026-10-21');
       expect(state.getScheduleFormValue()?.Time).toBe('2026-10-21T04:00:00.000Z');
       expect(state.scheduleType()).toBe('daily');
     });

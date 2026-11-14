@@ -1,6 +1,8 @@
 <section class="left">
   <div class="actionables">
-    <div class="without-connecting" (click)="openSkipDialog()" i18n>Proceed without connecting to console</div>
+    <div appKeyboardAction class="without-connecting" (click)="openSkipDialog()" i18n>
+      Proceed without connecting to console
+    </div>
 
     <div class="benefits">
       @for (benefit of primaryBenefits; track benefit) {
@@ -27,7 +29,7 @@
       <sh-checkbox [(checked)]="hasConnectionLink" class="primary raised connection-link-check"></sh-checkbox>
       <span i18n>I have a connection link</span>
       <sh-icon [shTooltip]="'Connection links are used for Enterprise and large-scale installations'">
-        information
+        info
       </sh-icon>
     </div>
   </div>

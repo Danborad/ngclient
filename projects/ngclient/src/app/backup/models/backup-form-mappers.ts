@@ -7,7 +7,14 @@ import {
 } from '../../core/openapi';
 import { splitSize } from '../../core/functions/parse-size';
 import { resolveBackupEncryptionSettings } from '../backup-encryption-settings';
-import { BackupOptionsFormValue, SMART_RETENTION } from './backup-options';
+import {
+  BackupOptionsFormValue,
+  SMART_RETENTION,
+  SYNC_KEEP_SNAPSHOTS_OPTION,
+  SYNC_SNAPSHOT_DISABLE_HARDLINKS_OPTION,
+  SYNC_SNAPSHOT_FOLDERS_OPTION,
+  SYNC_SNAPSHOT_OPTION_NAMES,
+} from './backup-options';
 import { GeneralFormValue, NONE_OPTION } from './general-form';
 import { SourceDataFormValue } from './source-data-form';
 
@@ -17,7 +24,44 @@ export type BackupTargetUrl = {
   connectionStringId: number | null;
   urlKey: string | null;
   save: boolean;
+  mode?: string | null;
+  interval?: string | null;
+  options?: Record<string, unknown> | null;
 };
+
+export const secondaryDestinationMode = (target: BackupTargetUrl) => (target.mode ?? 'inline').trim().toLowerCase();
+
+export const secondaryDestinationCount = (target: BackupTargetUrl) =>
+  Object.entries(target.options ?? {}).find(([key]) => key.toLowerCase() === 'count')?.[1];
+
+export function secondaryDestinationError(target: BackupTargetUrl): 'interval' | 'count' | null {
+  const mode = secondaryDestinationMode(target);
+  if (mode === 'counting') {
+    const count = secondaryDestinationCount(target);
+    return typeof count === 'number' && Number.isInteger(count) && count > 0 && count <= 2147483647 ? null : 'count';
+  }
+  if (mode !== 'interval') return null;
+
+  // Match Timeparser.ParseTimeSpan: seconds or signed integer parts with case-sensitive units.
+  const units: Record<string, number> = { s: 1, m: 60, h: 3600, D: 86400, W: 604800, M: 2592000, Y: 31536000 };
+  let remaining = target.interval?.trim() ?? '';
+  let seconds = 0;
+  if (/^[+-]?\d+$/.test(remaining)) {
+    seconds = Number(remaining);
+    remaining = '';
+  } else {
+    while (remaining) {
+      const part = /^([+-]?\d+)\s*([smhDWMY])\s*/.exec(remaining);
+      if (!part) return 'interval';
+      const factor = Number(part[1]);
+      if (!Number.isInteger(factor) || factor < -2147483648 || factor > 2147483647) return 'interval';
+      seconds += factor * units[part[2]];
+      if (Math.abs(seconds) > 922337203685.4775) return 'interval';
+      remaining = remaining.slice(part[0].length);
+    }
+  }
+  return seconds > 0 && seconds <= 922337203685.4775 ? null : 'interval';
+}
 
 export type BackupFormValue = {
   general: GeneralFormValue;
@@ -93,6 +137,7 @@ export function mapBackupFormToSettings(
     'keep-time',
     'keep-versions',
     'retention-policy',
+    ...SYNC_SNAPSHOT_OPTION_NAMES,
     ...legacyOptionValues,
     ...legacyOptionValues.map((x) => `--${x}`),
   ];
@@ -134,6 +179,26 @@ export function mapBackupFormToSettings(
     .filter((x) => x !== null);
 
   const optionFields = [];
+
+  if (syncMode && optionsFields.syncSnapshotFolders) {
+    optionFields.push({
+      Name: `--${SYNC_SNAPSHOT_FOLDERS_OPTION}`,
+      Value: 'True',
+    });
+
+    const keep = optionsFields.syncKeepSnapshots ?? 0;
+    if (keep > 0)
+      optionFields.push({
+        Name: `--${SYNC_KEEP_SNAPSHOTS_OPTION}`,
+        Value: keep.toString(),
+      });
+
+    if (optionsFields.syncSnapshotDisableHardlinks)
+      optionFields.push({
+        Name: `--${SYNC_SNAPSHOT_DISABLE_HARDLINKS_OPTION}`,
+        Value: 'True',
+      });
+  }
 
   if (!syncMode) {
     switch (optionsFields.backupRetention) {
@@ -245,6 +310,7 @@ export function mapBackupToOptionsForm(
     'keep-time',
     'keep-versions',
     'retention-policy',
+    ...SYNC_SNAPSHOT_OPTION_NAMES,
   ];
 
   const allSettings = (backup.Settings ?? []).map((x) => <SettingInputDto>x);
@@ -278,7 +344,27 @@ export function mapBackupToOptionsForm(
   });
 
   var retentionValue: BackupOptionsFormValue['backupRetention'] = 'all';
+  fields.syncSnapshotFolders = false;
+  fields.syncKeepSnapshots = 0;
+  fields.syncSnapshotDisableHardlinks = false;
   excludedSettings?.forEach((x) => {
+    const name = x.Name?.replace(/^--/, '');
+    if (name === SYNC_SNAPSHOT_FOLDERS_OPTION) {
+      fields.syncSnapshotFolders = (x.Value ?? '').toLowerCase() === 'true';
+      return;
+    }
+
+    if (name === SYNC_KEEP_SNAPSHOTS_OPTION) {
+      const keep = parseInt(x.Value ?? '');
+      fields.syncKeepSnapshots = isNaN(keep) || keep < 0 ? 0 : keep;
+      return;
+    }
+
+    if (name === SYNC_SNAPSHOT_DISABLE_HARDLINKS_OPTION) {
+      fields.syncSnapshotDisableHardlinks = (x.Value ?? '').toLowerCase() === 'true';
+      return;
+    }
+
     if (x.Name === 'keep-time') {
       // If this is not filled correctly, revert to 'all'
       const v = x.Value ?? '';

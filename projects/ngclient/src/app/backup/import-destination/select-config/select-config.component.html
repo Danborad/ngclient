@@ -1,23 +1,40 @@
-<div class="content-wrapper">
+<div class="content-wrapper" [attr.aria-busy]="isLoading()">
   <h2 i18n>Select configurations to import</h2>
 
   @if (isLoading()) {
-    <div class="loading-state">
+    <div class="loading-state" role="status">
       <sh-progress-bar class="primary indeterminate"></sh-progress-bar>
       <p i18n>Fetching backup configurations from destination...</p>
     </div>
-  } @else if (configs().length === 0) {
+  } @else if (loadState().status === 'error') {
+    <div class="empty-state" role="alert">
+      <p i18n>Could not fetch backup configurations. Please try again.</p>
+      <button shButton type="button" (click)="loadConfigurations()" i18n>Retry</button>
+    </div>
+  } @else if (loadState().status === 'success' && configs().length === 0) {
     <div class="empty-state">
       <p i18n>No backup configurations found at this destination.</p>
     </div>
-  } @else {
+  } @else if (configs().length > 0) {
     @if (configs().length > 1) {
       <div class="search-area">
         <sh-form-field>
-          <input type="text" i18n-placeholder placeholder="Search for destination..." [(ngModel)]="searchTerm" />
+          <input
+            type="text"
+            i18n-placeholder
+            placeholder="Search for destination..."
+            [formField]="selectionForm.searchTerm" />
           <sh-icon prefix>magnifying-glass</sh-icon>
           @if (searchTerm()) {
-            <sh-icon class="clear-search" suffix (click)="searchTerm.set('')">x-circle</sh-icon>
+            <sh-icon
+              appKeyboardAction
+              aria-label="Clear search"
+              i18n-aria-label
+              class="clear-search"
+              suffix
+              (click)="$event.stopPropagation(); searchTerm.set('')">
+              x-circle
+            </sh-icon>
           }
         </sh-form-field>
       </div>
@@ -31,6 +48,7 @@
     <div class="config-list">
       @for (config of configsSorted(); track config.BackupId) {
         <sh-card
+          appKeyboardAction
           class="type-a actionable full-width"
           [class.unmatched]="config.Match === false"
           (click)="toggleSelected(config.BackupId)">
@@ -82,7 +100,7 @@
 
     <div class="options">
       @if (selectedItems().length <= 1) {
-        <sh-toggle [color]="'primary'" [(checked)]="saveNow" i18n>
+        <sh-toggle [color]="'primary'" [formField]="selectionForm.saveNow" i18n>
           Save now
           <sh-icon class="small" [shTooltip]="'Save backups without editing the configuration'">info</sh-icon>
         </sh-toggle>
@@ -95,7 +113,7 @@
           </sh-icon>
         </sh-toggle>
       }
-      <sh-toggle [color]="'primary'" [(checked)]="importMetadata" i18n>Import metadata</sh-toggle>
+      <sh-toggle [color]="'primary'" [formField]="selectionForm.importMetadata" i18n>Import metadata</sh-toggle>
     </div>
   }
 

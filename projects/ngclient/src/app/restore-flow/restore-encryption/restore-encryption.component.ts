@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
-import { FormBuilder, ReactiveFormsModule } from '@angular/forms';
+import { FormField } from '@angular/forms/signals';
+import { NullableTextControl } from '../../backup/general/nullable-text-control';
 import { ActivatedRoute, Router } from '@angular/router';
 import { ShipButton } from '@ship-ui/core/ship-button';
 import { ShipFormField } from '@ship-ui/core/ship-form-field';
@@ -10,17 +11,9 @@ import { OptionsListComponent } from '../../backup/options/options-list/options-
 import { DuplicatiServer, SettingInputDto } from '../../core/openapi';
 import { RestoreFlowState } from '../restore-flow.state';
 
-const fb = new FormBuilder();
-
-export const createEncryptionForm = () => {
-  return fb.group({
-    passphrase: fb.control<string>(''),
-  });
-};
-
 @Component({
   selector: 'app-restore-encryption',
-  imports: [ReactiveFormsModule, ShipFormField, ShipIcon, ShipButton, ShipToggleCard, OptionsListComponent],
+  imports: [FormField, NullableTextControl, ShipFormField, ShipIcon, ShipButton, ShipToggleCard, OptionsListComponent],
   templateUrl: './restore-encryption.component.html',
   styleUrl: './restore-encryption.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -45,13 +38,14 @@ export default class RestoreEncryptionComponent {
 
   next() {
     const currentTargetUrl = this.#restoreFlowState.destinationTargetUrl();
+    const connectionStringId = this.#restoreFlowState.destinationConnectionStringId();
     if (!currentTargetUrl) {
       throw new Error('No target URL');
     }
 
     this.creatingTemporaryBackup.set(true);
 
-    const pass = this.encryptionForm.value?.passphrase ?? null;
+    const pass = this.encryptionForm.passphrase().value();
 
     let settings: SettingInputDto[] = [];
 
@@ -76,6 +70,7 @@ export default class RestoreEncryptionComponent {
         body: {
           Backup: {
             TargetURL: currentTargetUrl,
+            ...(connectionStringId !== null ? { ConnectionStringID: connectionStringId } : {}),
             Settings: settings,
           },
         },

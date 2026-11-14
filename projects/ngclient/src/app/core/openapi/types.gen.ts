@@ -49,6 +49,7 @@ export type BackupDto = {
     TargetURL: string | null;
     ConnectionStringID?: number;
     OperationType?: OperationType;
+    Enabled?: boolean;
     DBPath: string | null;
     DBPathExists: boolean;
     Sources: Array<string> | null;
@@ -70,6 +71,7 @@ export type BackupInputDto = {
     TargetURL?: string | null;
     ConnectionStringID?: number;
     OperationType?: OperationType;
+    Enabled?: boolean | null;
     Sources?: Array<string> | null;
     Settings?: Array<SettingInputDto> | null;
     Filters?: Array<FilterInputDto> | null;
@@ -155,6 +157,26 @@ export type CreateConnectionStringDto = {
     Name: string | null;
     Description: string | null;
     BaseUrl: string | null;
+};
+
+export type CreateMcpTokenInputDto = {
+    Name?: string | null;
+    Level?: McpTokenLevel;
+    BackupIds?: Array<string> | null;
+    RestoreRoots?: Array<string> | null;
+    ExpiresIn?: string | null;
+};
+
+export type CreateMcpTokenOutputDto = {
+    Token?: McpTokenDto;
+    AccessToken?: string | null;
+};
+
+export type CreateMcpTokenOutputDtoResponseEnvelope = {
+    Success: boolean;
+    Error: string | null;
+    StatusCode: string | null;
+    Data?: CreateMcpTokenOutputDto;
 };
 
 export type DayOfWeek = 'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat';
@@ -556,6 +578,26 @@ export type LoginInputDto = {
     RememberMe?: boolean | null;
 };
 
+export type McpTokenDto = {
+    Id?: string | null;
+    Name?: string | null;
+    Created?: string;
+    Expires?: string;
+    Expired?: boolean;
+    Level?: McpTokenLevel;
+    BackupIds?: Array<string> | null;
+    RestoreRoots?: Array<string> | null;
+};
+
+export type McpTokenDtoArrayResponseEnvelope = {
+    Success: boolean;
+    Error: string | null;
+    StatusCode: string | null;
+    Data?: Array<McpTokenDto> | null;
+};
+
+export type McpTokenLevel = 'Read' | 'Backup' | 'Restore';
+
 export type NotificationDto = {
     ID: number;
     Type: NotificationType;
@@ -596,6 +638,7 @@ export type PurgeFilesRequestDto = {
     BackupId: string | null;
     Filters: Array<string> | null;
     Versions?: Array<number> | null;
+    SuppressCompact?: boolean | null;
 };
 
 export type RefreshTokenInputDto = {
@@ -822,6 +865,11 @@ export type SystemInfoDto = {
     CaseSensitiveFilesystem: boolean;
     MachineName: string | null;
     PackageTypeId: string | null;
+    EntryAssembly: string | null;
+    InstallationFolder: string | null;
+    DataFolder: string | null;
+    UpdateInstallSupported: boolean;
+    UpdateInstallUnsupportedReason: string | null;
     UserName: string | null;
     NewLine: string | null;
     CLRVersion: string | null;
@@ -981,7 +1029,9 @@ export type TreeNodeDto = {
     systemFile: boolean;
     temporary: boolean;
     symlink: boolean;
+    symlinkTarget?: string | null;
     fileSize: number;
+    kind?: string | null;
 };
 
 export type UpdateCertificateInputDto = {
@@ -999,7 +1049,7 @@ export type UpdateDbPathInputDto = {
     path?: string | null;
 };
 
-export type UpdatePollerStates = 'Waiting' | 'Checking' | 'Downloading';
+export type UpdatePollerStates = 'Waiting' | 'Checking' | 'Downloading' | 'Verifying' | 'LaunchingHelper' | 'Installing';
 
 export type WebModuleOutputDto = {
     Status?: string | null;
@@ -1022,6 +1072,7 @@ export type BackupDtoWritable = {
     TargetURL: string | null;
     ConnectionStringID?: number;
     OperationType?: OperationType;
+    Enabled?: boolean;
     DBPath: string | null;
     DBPathExists: boolean;
     Sources: Array<string> | null;
@@ -1112,6 +1163,11 @@ export type SystemInfoDtoWritable = {
     CaseSensitiveFilesystem: boolean;
     MachineName: string | null;
     PackageTypeId: string | null;
+    EntryAssembly: string | null;
+    InstallationFolder: string | null;
+    DataFolder: string | null;
+    UpdateInstallSupported: boolean;
+    UpdateInstallUnsupportedReason: string | null;
     UserName: string | null;
     NewLine: string | null;
     CLRVersion: string | null;
@@ -2164,6 +2220,34 @@ export type PostApiV1UpdatesCheckResponses = {
     200: unknown;
 };
 
+export type PostApiV1UpdatesInstallData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/updates/install';
+};
+
+export type PostApiV1UpdatesInstallResponses = {
+    /**
+     * OK
+     */
+    200: unknown;
+};
+
+export type PostApiV1UpdatesCancelInstallData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/updates/cancel-install';
+};
+
+export type PostApiV1UpdatesCancelInstallResponses = {
+    /**
+     * OK
+     */
+    200: unknown;
+};
+
 export type PostApiV1WebmoduleByModulekeyData = {
     body: {
         [key: string]: string;
@@ -2441,6 +2525,38 @@ export type PostApiV1BackupByIdDeletedbData = {
 };
 
 export type PostApiV1BackupByIdDeletedbResponses = {
+    /**
+     * OK
+     */
+    200: unknown;
+};
+
+export type PostApiV1BackupByIdEnableData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/backup/{id}/enable';
+};
+
+export type PostApiV1BackupByIdEnableResponses = {
+    /**
+     * OK
+     */
+    200: unknown;
+};
+
+export type PostApiV1BackupByIdDisableData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/backup/{id}/disable';
+};
+
+export type PostApiV1BackupByIdDisableResponses = {
     /**
      * OK
      */
@@ -2827,6 +2943,56 @@ export type PostApiV2DestinationListResponses = {
 
 export type PostApiV2DestinationListResponse = PostApiV2DestinationListResponses[keyof PostApiV2DestinationListResponses];
 
+export type GetApiV2McpTokensData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v2/mcp/tokens';
+};
+
+export type GetApiV2McpTokensResponses = {
+    /**
+     * OK
+     */
+    200: McpTokenDtoArrayResponseEnvelope;
+};
+
+export type GetApiV2McpTokensResponse = GetApiV2McpTokensResponses[keyof GetApiV2McpTokensResponses];
+
+export type PostApiV2McpTokensData = {
+    body: CreateMcpTokenInputDto;
+    path?: never;
+    query?: never;
+    url: '/api/v2/mcp/tokens';
+};
+
+export type PostApiV2McpTokensResponses = {
+    /**
+     * OK
+     */
+    200: CreateMcpTokenOutputDtoResponseEnvelope;
+};
+
+export type PostApiV2McpTokensResponse = PostApiV2McpTokensResponses[keyof PostApiV2McpTokensResponses];
+
+export type DeleteApiV2McpTokenByIdData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/v2/mcp/token/{id}';
+};
+
+export type DeleteApiV2McpTokenByIdResponses = {
+    /**
+     * OK
+     */
+    200: ObjectResponseEnvelope;
+};
+
+export type DeleteApiV2McpTokenByIdResponse = DeleteApiV2McpTokenByIdResponses[keyof DeleteApiV2McpTokenByIdResponses];
+
 export type GetApiV2SystemStatusData = {
     body?: never;
     path?: never;
@@ -2923,22 +3089,6 @@ export type PostApiV2BackupDeleteVersionsResponses = {
 
 export type PostApiV2BackupDeleteVersionsResponse = PostApiV2BackupDeleteVersionsResponses[keyof PostApiV2BackupDeleteVersionsResponses];
 
-export type PostApiV2BackupRestoreTestData = {
-    body: RestoreTestRequestDto;
-    path?: never;
-    query?: never;
-    url: '/api/v2/backup/restore-test';
-};
-
-export type PostApiV2BackupRestoreTestResponses = {
-    /**
-     * OK
-     */
-    200: TaskStartedDto;
-};
-
-export type PostApiV2BackupRestoreTestResponse = PostApiV2BackupRestoreTestResponses[keyof PostApiV2BackupRestoreTestResponses];
-
 export type PostApiV2BackupListFilesetsData = {
     body: ListFilesetsRequestDto;
     path?: never;
@@ -3018,6 +3168,22 @@ export type PostApiV2BackupPurgeFilesResponses = {
 };
 
 export type PostApiV2BackupPurgeFilesResponse = PostApiV2BackupPurgeFilesResponses[keyof PostApiV2BackupPurgeFilesResponses];
+
+export type PostApiV2BackupRestoreTestData = {
+    body: RestoreTestRequestDto;
+    path?: never;
+    query?: never;
+    url: '/api/v2/backup/restore-test';
+};
+
+export type PostApiV2BackupRestoreTestResponses = {
+    /**
+     * OK
+     */
+    200: TaskStartedDto;
+};
+
+export type PostApiV2BackupRestoreTestResponse = PostApiV2BackupRestoreTestResponses[keyof PostApiV2BackupRestoreTestResponses];
 
 export type PostApiV2BackupSetVersionLabelData = {
     body: SetVersionLabelRequestDto;

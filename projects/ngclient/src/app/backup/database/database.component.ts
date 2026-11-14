@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, Signal, signal } from '@angular/core';
 import { toObservable, toSignal } from '@angular/core/rxjs-interop';
-import { FormsModule } from '@angular/forms';
+import { form, FormField } from '@angular/forms/signals';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { ShipTooltip } from '@ship-ui/core/ship-tooltip';
 import { ShipButton } from '@ship-ui/core/ship-button';
@@ -22,7 +22,7 @@ function debouncedSignal<T>(source: Signal<T>, wait: number) {
 
 @Component({
   selector: 'app-database',
-  imports: [FormsModule, StatusBarComponent, ShipButton, ShipFormField, ShipIcon, ShipTooltip, RouterLink],
+  imports: [FormField, StatusBarComponent, ShipButton, ShipFormField, ShipIcon, ShipTooltip, RouterLink],
   templateUrl: './database.component.html',
   styleUrl: './database.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -37,9 +37,10 @@ export default class DatabaseComponent {
   backupId = toSignal<string>(this.#route.params.pipe(map((x) => x['id'])));
   activeBackup = computed(() => this.#backups.backups().find((x) => x.Backup?.ID === this.backupId()));
 
-  backupFilePath = signal<string>('');
+  placementForm = form(signal({ path: '' }));
+  backupFilePath = this.placementForm.path().value;
   lastValidatedPath = signal<string>('');
-  isValidatedPath = computed(() => this.lastValidatedPath() === this.backupFilePath());
+  isValidatedPath = computed(() => this.backupFilePath() !== '' && this.lastValidatedPath() === this.backupFilePath());
   pathHasChanged = computed(() => this.backupFilePath() !== this.#firstDBPath());
   isValidatingPath = signal(false);
   #debouncedBackupFilePath = debouncedSignal(this.backupFilePath, 500);
@@ -48,20 +49,26 @@ export default class DatabaseComponent {
     () => this.#debouncedBackupFilePath() != this.backupFilePath() || this.isValidatingPath()
   );
 
-  backupFilePathEffect = effect(() => {
+  backupFilePathEffect = effect((onCleanup) => {
     const backupFilePath = this.#debouncedBackupFilePath();
     const _1 = this.activeBackup(); // Also trigger if the backup changes
     const _2 = this.#movedDbPath(); // Also trigger if the movedDbPath changes
 
+    this.lastValidatedPath.set('');
     if (backupFilePath === '') return;
 
     this.isValidatingPath.set(true);
-    defer(() => this.#dupServer.postApiV1FilesystemValidate({ body: { path: backupFilePath } }))
+    const subscription = defer(() => this.#dupServer.postApiV1FilesystemValidate({ body: { path: backupFilePath } }))
       .pipe(
         take(1),
         finalize(() => this.isValidatingPath.set(false))
       )
-      .subscribe(() => this.lastValidatedPath.set(backupFilePath));
+      .subscribe({
+        next: () => this.lastValidatedPath.set(backupFilePath),
+        // A missing or inaccessible path stays invalid; allow validation of the next edit.
+        error: () => {},
+      });
+    onCleanup(() => subscription.unsubscribe());
   });
 
   isRestoring = signal(false);

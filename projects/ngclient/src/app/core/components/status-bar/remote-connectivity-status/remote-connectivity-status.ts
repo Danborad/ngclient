@@ -1,4 +1,5 @@
-import { ChangeDetectionStrategy, Component, effect, inject, signal } from '@angular/core';
+import { KeyboardActionDirective } from '../../../directives/keyboard-action.directive';
+import { ChangeDetectionStrategy, Component, effect, inject, input, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { ShipTooltip } from '@ship-ui/core/ship-tooltip';
 import { ShipIcon } from '@ship-ui/core/ship-icon';
@@ -6,7 +7,7 @@ import { RemoteControlState } from '../../../../settings/remote-control/remote-c
 
 @Component({
   selector: 'app-remote-connectivity-status',
-  imports: [RouterLink, ShipIcon, ShipTooltip],
+  imports: [KeyboardActionDirective, RouterLink, ShipIcon, ShipTooltip],
   templateUrl: './remote-connectivity-status.html',
   styleUrl: './remote-connectivity-status.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -14,6 +15,7 @@ import { RemoteControlState } from '../../../../settings/remote-control/remote-c
 export default class RemoteConnectivityStatus {
   #remoteControlState = inject(RemoteControlState);
 
+  indicatorOnly = input(false);
   state = this.#remoteControlState.state;
   resetting = signal(false);
 

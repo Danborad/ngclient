@@ -25,7 +25,7 @@ describe('command execution confirmation and arguments', () => {
       { Name: '--verbose', Value: 'true' },
     ]);
     const state = {
-      optionsFields: {},
+      optionsForm: {},
       finishedLoading: signal(false),
       backupId: signal('42'),
       settings,
@@ -169,5 +169,25 @@ describe('command execution confirmation and arguments', () => {
     expect(component.filters()).toEqual(['-*.tmp']);
     expect(state.settings()).toEqual(saved.options);
     expect(state.finishedLoading()).toBe(true);
+  });
+  it('fills the backup sources as arguments of the backup command only', () => {
+    const { component } = setup();
+    expect(component.baseCmdForm.value.arguments).toBe('/source');
+
+    // The sources are not arguments of other commands, test takes a number of samples (duplicati#4082)
+    component.baseCmdForm.controls.command.setValue('test');
+    expect(component.baseCmdForm.value.arguments).toBe('');
+
+    component.baseCmdForm.controls.command.setValue('backup');
+    expect(component.baseCmdForm.value.arguments).toBe('/source');
+  });
+  it('keeps arguments the user typed when the command changes', () => {
+    const { component } = setup();
+    component.baseCmdForm.controls.arguments.setValue('5');
+    component.baseCmdForm.controls.command.setValue('test');
+    expect(component.baseCmdForm.value.arguments).toBe('5');
+
+    component.baseCmdForm.controls.command.setValue('backup');
+    expect(component.baseCmdForm.value.arguments).toBe('5');
   });
 });
